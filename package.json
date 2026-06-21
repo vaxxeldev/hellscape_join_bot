@@ -11,9 +11,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=22.17.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.3",
     "https-proxy-agent": "^9.1.0",
     "pino": "^10.1.0",
@@ -21,6 +22,7 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"

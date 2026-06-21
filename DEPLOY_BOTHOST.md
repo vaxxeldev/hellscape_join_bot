@@ -32,7 +32,7 @@ node:22 Alpine
 FROM node:24-bookworm-slim
 ```
 
-`package.json` допускает Node.js 22.17+, потому что на Bothost сейчас используется Node.js 22.23.0.
+`package.json` допускает Node.js 20+, потому что Bothost может запускать авто-Node окружение на Node.js 20.
 
 ## База данных
 

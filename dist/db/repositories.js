@@ -33,7 +33,7 @@ export class Repositories {
         return this.db.get("SELECT * FROM users WHERE username = :username COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1", { username: username.replace(/^@/, "") });
     }
     setUserBanned(telegramId, isBanned, reason = null) {
-        // Each branch binds exactly the named params its SQL references — node:sqlite
+        // Each branch binds exactly the named params its SQL references — SQLite
         // rejects extra named parameters, so the unban query must not receive :reason.
         // Unbanning also resets the bot-join counter and ban reason, so /unban gives
         // the user a fresh set of join attempts before the limit auto-bans them again.

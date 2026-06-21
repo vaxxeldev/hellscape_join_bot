@@ -1,21 +1,23 @@
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import BetterSqlite3 from "better-sqlite3";
+import type { Database as SqliteDatabase, RunResult } from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { logger } from "../utils/logger.js";
 
+type SQLInputValue = string | number | bigint | Buffer | null;
+
 export class Database {
-  private readonly db: DatabaseSync;
+  private readonly db: SqliteDatabase;
 
   constructor(databaseUrl: string) {
     const filePath = databaseUrl.startsWith("file:") ? databaseUrl.slice("file:".length) : databaseUrl;
     const resolvedPath = path.resolve(process.cwd(), filePath);
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-    this.db = new DatabaseSync(resolvedPath);
+    this.db = new BetterSqlite3(resolvedPath, { timeout: 5000 });
     this.db.exec(`
       PRAGMA foreign_keys = ON;
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
-      PRAGMA busy_timeout = 5000;
       PRAGMA temp_store = MEMORY;
     `);
     this.applyMigrations();
@@ -29,20 +31,12 @@ export class Database {
     return this.db.prepare(sql).get(params) as T | undefined;
   }
 
-  run(sql: string, params: Record<string, SQLInputValue> = {}) {
+  run(sql: string, params: Record<string, SQLInputValue> = {}): RunResult {
     return this.db.prepare(sql).run(params);
   }
 
   transaction<T>(fn: () => T) {
-    this.db.exec("BEGIN");
-    try {
-      const result = fn();
-      this.db.exec("COMMIT");
-      return result;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    return this.db.transaction(fn)();
   }
 
   close() {
