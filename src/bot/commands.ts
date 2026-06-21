@@ -3,7 +3,7 @@ import type { AppConfig } from "../config/env.js";
 import { reloadConfig } from "../config/env.js";
 import type { Repositories } from "../db/repositories.js";
 import { isAdmin } from "../services/admin.js";
-import { safeReplyWithBanner, withoutLinkPreview } from "../services/telegram.js";
+import { safeReplyWithBanner, safeRevokeInviteLink, withoutLinkPreview } from "../services/telegram.js";
 import type { SubscriptionService } from "../services/subscriptions.js";
 import type { FormService } from "./fsm.js";
 import type { BotContext } from "../types.js";
@@ -21,6 +21,8 @@ import {
   banResultMessage,
   banUsageMessage,
   changeReservationUsageMessage,
+  cleanupApplicationsResultMessage,
+  cleanupApplicationsUsageMessage,
   configReloadedMessage,
   helpMessage,
   noActiveReservationMessage,
@@ -88,6 +90,7 @@ export class CommandHandlers {
     this.bot.command("reservations", async (ctx) => this.reservations(ctx));
     this.bot.command("expire_reserve", async (ctx) => this.changeReservation(ctx, "expired"));
     this.bot.command("use_reserve", async (ctx) => this.changeReservation(ctx, "used"));
+    this.bot.command("cleanup_applications", async (ctx) => this.cleanupApplications(ctx));
   }
 
   private async status(ctx: BotContext) {
@@ -230,6 +233,41 @@ export class CommandHandlers {
         details: `reservation ${id}`,
       });
       await ctx.reply(reservationStatusChangedMessage(id, status), { parse_mode: "HTML" });
+    });
+  }
+
+  private async cleanupApplications(ctx: BotContext) {
+    await this.adminOnly(ctx, async () => {
+      const [date, confirmation] = this.commandArgs(ctx);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? "") || confirmation !== "CONFIRM") {
+        await ctx.reply(cleanupApplicationsUsageMessage(), { parse_mode: "HTML" });
+        return;
+      }
+
+      const result = this.repos.cleanupApplicationsByDate(date);
+      let revokedInviteLinks = 0;
+      let failedInviteRevokes = 0;
+      for (const invite of result.activeInviteLinks) {
+        const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
+        if (revoked) revokedInviteLinks += 1;
+        else failedInviteRevokes += 1;
+      }
+
+      this.repos.logAdminAction({
+        adminId: ctx.from!.id,
+        action: "applications_cleanup",
+        details: `date=${date}; applications=${result.applications}; invite_links=${result.inviteLinks}; join_requests=${result.joinRequests}`,
+      });
+
+      await ctx.reply(
+        cleanupApplicationsResultMessage({
+          date,
+          ...result,
+          revokedInviteLinks,
+          failedInviteRevokes,
+        }),
+        { parse_mode: "HTML" },
+      );
     });
   }
 

@@ -50,6 +50,7 @@ export function adminHelpMessage() {
 <code>/reservations</code> — активные брони
 <code>/expire_reserve ID</code> — закрыть бронь
 <code>/use_reserve ID</code> — отметить использованной
+<code>/cleanup_applications YYYY-MM-DD CONFIRM</code> — удалить анкеты за дату
 <code>/reload</code> — перечитать .env`;
 }
 
@@ -269,6 +270,30 @@ export function reservationNotFoundMessage() {
 
 export function reservationStatusChangedMessage(id: number, status: "expired" | "used") {
   return `Бронь <code>#${id}</code> теперь в статусе <code>${reservationStatusLabel(status)}</code>.`;
+}
+
+export function cleanupApplicationsUsageMessage() {
+  return "Использование: <code>/cleanup_applications YYYY-MM-DD CONFIRM</code>\nНапример: <code>/cleanup_applications 2026-06-21 CONFIRM</code>";
+}
+
+export function cleanupApplicationsResultMessage(input: {
+  date: string;
+  applications: number;
+  inviteLinks: number;
+  joinRequests: number;
+  adminActions: number;
+  userStates: number;
+  revokedInviteLinks: number;
+  failedInviteRevokes: number;
+}) {
+  return `<b>Очистка анкет за ${escapeHtml(input.date)}</b>
+Анкет удалено: <code>${input.applications}</code>
+Invite-ссылок в БД удалено: <code>${input.inviteLinks}</code>
+Заявок на вступление удалено: <code>${input.joinRequests}</code>
+Админ-действий удалено: <code>${input.adminActions}</code>
+Состояний заполнения удалено: <code>${input.userStates}</code>
+Активных invite-ссылок отозвано в Telegram: <code>${input.revokedInviteLinks}</code>
+Не удалось отозвать ссылок: <code>${input.failedInviteRevokes}</code>`;
 }
 
 export function adminOnlyCommandMessage() {

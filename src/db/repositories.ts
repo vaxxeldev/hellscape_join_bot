@@ -16,6 +16,15 @@ import type { Database } from "./database.js";
 
 const WAITLIST_RESERVE_UNTIL = "9999-12-31T00:00:00.000Z";
 
+export type ApplicationCleanupResult = {
+  applications: number;
+  inviteLinks: number;
+  joinRequests: number;
+  adminActions: number;
+  userStates: number;
+  activeInviteLinks: InviteLinkRecord[];
+};
+
 export class Repositories {
   constructor(private readonly db: Database) {}
 
@@ -169,6 +178,76 @@ export class Repositories {
       "SELECT * FROM applications ORDER BY created_at DESC LIMIT :limit",
       { limit },
     );
+  }
+
+  cleanupApplicationsByDate(date: string): ApplicationCleanupResult {
+    const activeInviteLinks = this.db.query<InviteLinkRecord>(
+      `
+      SELECT il.* FROM invite_links il
+      JOIN applications a ON a.id = il.application_id
+      WHERE date(a.created_at) = :date AND il.status = 'active'
+      `,
+      { date },
+    );
+
+    return this.db.transaction(() => {
+      const userStates = this.db.run(
+        `
+        DELETE FROM user_states
+        WHERE flow = 'application'
+          AND telegram_id IN (
+            SELECT u.telegram_id
+            FROM users u
+            JOIN applications a ON a.user_id = u.id
+            WHERE date(a.created_at) = :date
+          )
+        `,
+        { date },
+      ).changes;
+
+      const joinRequests = this.db.run(
+        `
+        DELETE FROM join_requests
+        WHERE application_id IN (
+          SELECT id FROM applications WHERE date(created_at) = :date
+        )
+        OR invite_link_id IN (
+          SELECT il.id
+          FROM invite_links il
+          JOIN applications a ON a.id = il.application_id
+          WHERE date(a.created_at) = :date
+        )
+        `,
+        { date },
+      ).changes;
+
+      const inviteLinks = this.db.run(
+        `
+        DELETE FROM invite_links
+        WHERE application_id IN (
+          SELECT id FROM applications WHERE date(created_at) = :date
+        )
+        `,
+        { date },
+      ).changes;
+
+      const adminActions = this.db.run(
+        `
+        DELETE FROM admin_actions
+        WHERE application_id IN (
+          SELECT id FROM applications WHERE date(created_at) = :date
+        )
+        `,
+        { date },
+      ).changes;
+
+      const applications = this.db.run(
+        "DELETE FROM applications WHERE date(created_at) = :date",
+        { date },
+      ).changes;
+
+      return { applications, inviteLinks, joinRequests, adminActions, userStates, activeInviteLinks };
+    });
   }
 
   countApplicationsByUserId(userId: number) {

@@ -99,6 +99,51 @@ export class Repositories {
     listApplications(limit = 10) {
         return this.db.query("SELECT * FROM applications ORDER BY created_at DESC LIMIT :limit", { limit });
     }
+    cleanupApplicationsByDate(date) {
+        const activeInviteLinks = this.db.query(`
+      SELECT il.* FROM invite_links il
+      JOIN applications a ON a.id = il.application_id
+      WHERE date(a.created_at) = :date AND il.status = 'active'
+      `, { date });
+        return this.db.transaction(() => {
+            const userStates = this.db.run(`
+        DELETE FROM user_states
+        WHERE flow = 'application'
+          AND telegram_id IN (
+            SELECT u.telegram_id
+            FROM users u
+            JOIN applications a ON a.user_id = u.id
+            WHERE date(a.created_at) = :date
+          )
+        `, { date }).changes;
+            const joinRequests = this.db.run(`
+        DELETE FROM join_requests
+        WHERE application_id IN (
+          SELECT id FROM applications WHERE date(created_at) = :date
+        )
+        OR invite_link_id IN (
+          SELECT il.id
+          FROM invite_links il
+          JOIN applications a ON a.id = il.application_id
+          WHERE date(a.created_at) = :date
+        )
+        `, { date }).changes;
+            const inviteLinks = this.db.run(`
+        DELETE FROM invite_links
+        WHERE application_id IN (
+          SELECT id FROM applications WHERE date(created_at) = :date
+        )
+        `, { date }).changes;
+            const adminActions = this.db.run(`
+        DELETE FROM admin_actions
+        WHERE application_id IN (
+          SELECT id FROM applications WHERE date(created_at) = :date
+        )
+        `, { date }).changes;
+            const applications = this.db.run("DELETE FROM applications WHERE date(created_at) = :date", { date }).changes;
+            return { applications, inviteLinks, joinRequests, adminActions, userStates, activeInviteLinks };
+        });
+    }
     countApplicationsByUserId(userId) {
         const row = this.db.get("SELECT COUNT(*) AS count FROM applications WHERE user_id = :userId", { userId });
         return row?.count ?? 0;

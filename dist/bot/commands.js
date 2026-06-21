@@ -1,8 +1,8 @@
 import { reloadConfig } from "../config/env.js";
 import { isAdmin } from "../services/admin.js";
-import { safeReplyWithBanner, withoutLinkPreview } from "../services/telegram.js";
+import { safeReplyWithBanner, safeRevokeInviteLink, withoutLinkPreview } from "../services/telegram.js";
 import { mainMenuKeyboard } from "./keyboards.js";
-import { activeReservationMessage, adminHelpMessage, adminOnlyCommandMessage, adminPanelMessage, applicationCard, applicationNotFoundMessage, applicationStatusMessage, applicationUserNotFoundMessage, applicationsListMessage, banResultMessage, banUsageMessage, changeReservationUsageMessage, configReloadedMessage, helpMessage, noActiveReservationMessage, noApplicationsForAdminMessage, noApplicationsMessage, noReservationsMessage, openApplicationUsageMessage, reservationNotFoundMessage, reservationsListMessage, reservationStatusChangedMessage, rulesMessage, statsMessage, userNotFoundInDatabaseMessage, welcomeMessage, } from "./messages.js";
+import { activeReservationMessage, adminHelpMessage, adminOnlyCommandMessage, adminPanelMessage, applicationCard, applicationNotFoundMessage, applicationStatusMessage, applicationUserNotFoundMessage, applicationsListMessage, banResultMessage, banUsageMessage, changeReservationUsageMessage, cleanupApplicationsResultMessage, cleanupApplicationsUsageMessage, configReloadedMessage, helpMessage, noActiveReservationMessage, noApplicationsForAdminMessage, noApplicationsMessage, noReservationsMessage, openApplicationUsageMessage, reservationNotFoundMessage, reservationsListMessage, reservationStatusChangedMessage, rulesMessage, statsMessage, userNotFoundInDatabaseMessage, welcomeMessage, } from "./messages.js";
 export class CommandHandlers {
     bot;
     repos;
@@ -50,6 +50,7 @@ export class CommandHandlers {
         this.bot.command("reservations", async (ctx) => this.reservations(ctx));
         this.bot.command("expire_reserve", async (ctx) => this.changeReservation(ctx, "expired"));
         this.bot.command("use_reserve", async (ctx) => this.changeReservation(ctx, "used"));
+        this.bot.command("cleanup_applications", async (ctx) => this.cleanupApplications(ctx));
     }
     async status(ctx) {
         if (!ctx.from)
@@ -185,6 +186,36 @@ export class CommandHandlers {
                 details: `reservation ${id}`,
             });
             await ctx.reply(reservationStatusChangedMessage(id, status), { parse_mode: "HTML" });
+        });
+    }
+    async cleanupApplications(ctx) {
+        await this.adminOnly(ctx, async () => {
+            const [date, confirmation] = this.commandArgs(ctx);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? "") || confirmation !== "CONFIRM") {
+                await ctx.reply(cleanupApplicationsUsageMessage(), { parse_mode: "HTML" });
+                return;
+            }
+            const result = this.repos.cleanupApplicationsByDate(date);
+            let revokedInviteLinks = 0;
+            let failedInviteRevokes = 0;
+            for (const invite of result.activeInviteLinks) {
+                const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
+                if (revoked)
+                    revokedInviteLinks += 1;
+                else
+                    failedInviteRevokes += 1;
+            }
+            this.repos.logAdminAction({
+                adminId: ctx.from.id,
+                action: "applications_cleanup",
+                details: `date=${date}; applications=${result.applications}; invite_links=${result.inviteLinks}; join_requests=${result.joinRequests}`,
+            });
+            await ctx.reply(cleanupApplicationsResultMessage({
+                date,
+                ...result,
+                revokedInviteLinks,
+                failedInviteRevokes,
+            }), { parse_mode: "HTML" });
         });
     }
     async adminOnly(ctx, fn) {
