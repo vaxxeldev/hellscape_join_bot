@@ -236,8 +236,7 @@ export class FormService {
                 await this.editCodePrompt(ctx, data, emptyCodeWordMessage());
                 return;
             }
-            const codeWordValid = normalizeCodeWord(trimmed) === normalizeCodeWord(this.getConfig().codeWord);
-            if (!codeWordValid) {
+            if (!this.isCodeWordValid(trimmed)) {
                 await this.rejectCodeWord(ctx, data);
                 return;
             }
@@ -245,7 +244,7 @@ export class FormService {
             await this.finishApplication(ctx, {
                 ...data,
                 codeWord: trimmed,
-                codeWordValid,
+                codeWordValid: true,
             });
         }
     }
@@ -294,8 +293,7 @@ export class FormService {
                 await this.editCodePrompt(ctx, data, emptyCodeWordMessage());
                 return;
             }
-            const codeWordValid = normalizeCodeWord(trimmed) === normalizeCodeWord(this.getConfig().codeWord);
-            if (!codeWordValid) {
+            if (!this.isCodeWordValid(trimmed)) {
                 await this.rejectCodeWord(ctx, data);
                 return;
             }
@@ -303,7 +301,7 @@ export class FormService {
             this.repos.setState(telegramId, "reservation", "until", {
                 ...data,
                 codeWord: trimmed,
-                codeWordValid,
+                codeWordValid: true,
             });
             await ctx.reply(reservationDateStepMessage(), {
                 parse_mode: "HTML",
@@ -368,8 +366,7 @@ export class FormService {
                 await this.editCodePrompt(ctx, data, emptyCodeWordMessage());
                 return;
             }
-            const codeWordValid = normalizeCodeWord(trimmed) === normalizeCodeWord(this.getConfig().codeWord);
-            if (!codeWordValid) {
+            if (!this.isCodeWordValid(trimmed)) {
                 await this.rejectCodeWord(ctx, data);
                 return;
             }
@@ -377,7 +374,7 @@ export class FormService {
             await this.finishWaitlistReservation(ctx, {
                 ...data,
                 codeWord: trimmed,
-                codeWordValid,
+                codeWordValid: true,
             });
         }
     }
@@ -397,6 +394,20 @@ export class FormService {
             parse_mode: "HTML",
             ...codeRulesKeyboard(this.getConfig()),
         });
+    }
+    isCodeWordValid(codeWord) {
+        if (!codeWord)
+            return false;
+        return normalizeCodeWord(codeWord) === normalizeCodeWord(this.getConfig().codeWord);
+    }
+    async ensureCodeWordStillValid(ctx, flow, data) {
+        if (data.codeWordValid === true && this.isCodeWordValid(data.codeWord))
+            return true;
+        logger.warn({ userId: ctx.from?.id }, "blocked finalization with invalid code word");
+        if (ctx.from)
+            this.repos.setState(ctx.from.id, flow, "code", data);
+        await this.rejectCodeWord(ctx, data);
+        return false;
     }
     async acceptCodeWord(ctx, data) {
         await this.editCodePrompt(ctx, data, codeWordAcceptedMessage(), {
@@ -471,6 +482,8 @@ export class FormService {
         await safeSendMessage(this.bot, this.getConfig().adminChatId, reservationExtendedAdminMessage(user, reservation, date));
     }
     async finishApplication(ctx, data) {
+        if (!(await this.ensureCodeWordStillValid(ctx, "application", data)))
+            return;
         const user = this.repos.upsertUser({
             telegramId: ctx.from.id,
             username: ctx.from.username,
@@ -530,6 +543,8 @@ export class FormService {
         }));
     }
     async finishReservation(ctx, data) {
+        if (!(await this.ensureCodeWordStillValid(ctx, "reservation", data)))
+            return;
         const user = this.repos.upsertUser({
             telegramId: ctx.from.id,
             username: ctx.from.username,
@@ -554,6 +569,8 @@ export class FormService {
         }));
     }
     async finishWaitlistReservation(ctx, data) {
+        if (!(await this.ensureCodeWordStillValid(ctx, "waitlist_reservation", data)))
+            return;
         const user = this.repos.upsertUser({
             telegramId: ctx.from.id,
             username: ctx.from.username,
