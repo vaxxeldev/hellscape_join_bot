@@ -25,6 +25,17 @@ export type ApplicationCleanupResult = {
   activeInviteLinks: InviteLinkRecord[];
 };
 
+export type DatabaseWipeResult = {
+  users: number;
+  applications: number;
+  inviteLinks: number;
+  joinRequests: number;
+  roleReservations: number;
+  adminActions: number;
+  userStates: number;
+  activeInviteLinks: InviteLinkRecord[];
+};
+
 export class Repositories {
   constructor(private readonly db: Database) {}
 
@@ -247,6 +258,47 @@ export class Repositories {
       ).changes;
 
       return { applications, inviteLinks, joinRequests, adminActions, userStates, activeInviteLinks };
+    });
+  }
+
+  wipeAllData(): DatabaseWipeResult {
+    const activeInviteLinks = this.db.query<InviteLinkRecord>(
+      "SELECT * FROM invite_links WHERE status = 'active'",
+    );
+
+    return this.db.transaction(() => {
+      const joinRequests = this.db.run("DELETE FROM join_requests").changes;
+      const inviteLinks = this.db.run("DELETE FROM invite_links").changes;
+      const applications = this.db.run("DELETE FROM applications").changes;
+      const roleReservations = this.db.run("DELETE FROM role_reservations").changes;
+      const userStates = this.db.run("DELETE FROM user_states").changes;
+      const adminActions = this.db.run("DELETE FROM admin_actions").changes;
+      const users = this.db.run("DELETE FROM users").changes;
+
+      this.db.run(
+        `
+        DELETE FROM sqlite_sequence
+        WHERE name IN (
+          'users',
+          'applications',
+          'invite_links',
+          'join_requests',
+          'admin_actions',
+          'role_reservations'
+        )
+        `,
+      );
+
+      return {
+        users,
+        applications,
+        inviteLinks,
+        joinRequests,
+        roleReservations,
+        adminActions,
+        userStates,
+        activeInviteLinks,
+      };
     });
   }
 

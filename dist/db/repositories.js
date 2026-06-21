@@ -144,6 +144,39 @@ export class Repositories {
             return { applications, inviteLinks, joinRequests, adminActions, userStates, activeInviteLinks };
         });
     }
+    wipeAllData() {
+        const activeInviteLinks = this.db.query("SELECT * FROM invite_links WHERE status = 'active'");
+        return this.db.transaction(() => {
+            const joinRequests = this.db.run("DELETE FROM join_requests").changes;
+            const inviteLinks = this.db.run("DELETE FROM invite_links").changes;
+            const applications = this.db.run("DELETE FROM applications").changes;
+            const roleReservations = this.db.run("DELETE FROM role_reservations").changes;
+            const userStates = this.db.run("DELETE FROM user_states").changes;
+            const adminActions = this.db.run("DELETE FROM admin_actions").changes;
+            const users = this.db.run("DELETE FROM users").changes;
+            this.db.run(`
+        DELETE FROM sqlite_sequence
+        WHERE name IN (
+          'users',
+          'applications',
+          'invite_links',
+          'join_requests',
+          'admin_actions',
+          'role_reservations'
+        )
+        `);
+            return {
+                users,
+                applications,
+                inviteLinks,
+                joinRequests,
+                roleReservations,
+                adminActions,
+                userStates,
+                activeInviteLinks,
+            };
+        });
+    }
     countApplicationsByUserId(userId) {
         const row = this.db.get("SELECT COUNT(*) AS count FROM applications WHERE user_id = :userId", { userId });
         return row?.count ?? 0;

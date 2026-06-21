@@ -38,6 +38,7 @@ export function adminHelpMessage() {
 <code>/expire_reserve ID</code> — закрыть бронь
 <code>/use_reserve ID</code> — отметить использованной
 <code>/cleanup_applications YYYY-MM-DD CONFIRM</code> — удалить анкеты за дату
+<code>/wipe_database CONFIRM_FULL_WIPE</code> — полностью очистить данные
 <code>/reload</code> — перечитать .env`;
 }
 export function missingSubscriptionsMessage(check) {
@@ -207,6 +208,21 @@ Invite-ссылок в БД удалено: <code>${input.inviteLinks}</code>
 Заявок на вступление удалено: <code>${input.joinRequests}</code>
 Админ-действий удалено: <code>${input.adminActions}</code>
 Состояний заполнения удалено: <code>${input.userStates}</code>
+Активных invite-ссылок отозвано в Telegram: <code>${input.revokedInviteLinks}</code>
+Не удалось отозвать ссылок: <code>${input.failedInviteRevokes}</code>`;
+}
+export function wipeDatabaseUsageMessage() {
+    return "Использование: <code>/wipe_database CONFIRM_FULL_WIPE</code>\nКоманда полностью удалит пользователей, анкеты, брони, invite-ссылки, заявки на вступление и состояния заполнения.";
+}
+export function wipeDatabaseResultMessage(input) {
+    return `<b>База данных очищена</b>
+Пользователей удалено: <code>${input.users}</code>
+Анкет удалено: <code>${input.applications}</code>
+Броней удалено: <code>${input.roleReservations}</code>
+Invite-ссылок в БД удалено: <code>${input.inviteLinks}</code>
+Заявок на вступление удалено: <code>${input.joinRequests}</code>
+Состояний заполнения удалено: <code>${input.userStates}</code>
+Админ-действий удалено: <code>${input.adminActions}</code>
 Активных invite-ссылок отозвано в Telegram: <code>${input.revokedInviteLinks}</code>
 Не удалось отозвать ссылок: <code>${input.failedInviteRevokes}</code>`;
 }

@@ -37,6 +37,8 @@ import {
   statsMessage,
   userNotFoundInDatabaseMessage,
   welcomeMessage,
+  wipeDatabaseResultMessage,
+  wipeDatabaseUsageMessage,
 } from "./messages.js";
 
 export class CommandHandlers {
@@ -91,6 +93,7 @@ export class CommandHandlers {
     this.bot.command("expire_reserve", async (ctx) => this.changeReservation(ctx, "expired"));
     this.bot.command("use_reserve", async (ctx) => this.changeReservation(ctx, "used"));
     this.bot.command("cleanup_applications", async (ctx) => this.cleanupApplications(ctx));
+    this.bot.command("wipe_database", async (ctx) => this.wipeDatabase(ctx));
   }
 
   private async status(ctx: BotContext) {
@@ -262,6 +265,34 @@ export class CommandHandlers {
       await ctx.reply(
         cleanupApplicationsResultMessage({
           date,
+          ...result,
+          revokedInviteLinks,
+          failedInviteRevokes,
+        }),
+        { parse_mode: "HTML" },
+      );
+    });
+  }
+
+  private async wipeDatabase(ctx: BotContext) {
+    await this.adminOnly(ctx, async () => {
+      const [confirmation] = this.commandArgs(ctx);
+      if (confirmation !== "CONFIRM_FULL_WIPE") {
+        await ctx.reply(wipeDatabaseUsageMessage(), { parse_mode: "HTML" });
+        return;
+      }
+
+      const result = this.repos.wipeAllData();
+      let revokedInviteLinks = 0;
+      let failedInviteRevokes = 0;
+      for (const invite of result.activeInviteLinks) {
+        const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
+        if (revoked) revokedInviteLinks += 1;
+        else failedInviteRevokes += 1;
+      }
+
+      await ctx.reply(
+        wipeDatabaseResultMessage({
           ...result,
           revokedInviteLinks,
           failedInviteRevokes,
