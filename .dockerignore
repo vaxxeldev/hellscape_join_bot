@@ -1,0 +1,16 @@
+.git
+.idea
+node_modules
+data
+dist
+deploy
+new_skill
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+npm-debug.log

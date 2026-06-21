@@ -1,0 +1,807 @@
+import type { Telegraf } from "telegraf";
+import type { AppConfig } from "../config/env.js";
+import type { Repositories } from "../db/repositories.js";
+import { adminDisplay, isAdmin } from "../services/admin.js";
+import type { SubscriptionService } from "../services/subscriptions.js";
+import { safeAnswerCallback, safeEditMessageText, safeRevokeInviteLink, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
+import type { ApplicationRecord, BotContext, UserRecord } from "../types.js";
+import { logger } from "../utils/logger.js";
+import { escapeHtml, mentionUser, normalizeCodeWord, usernameOrDash } from "../utils/text.js";
+import { addHours, formatDate, isPastIso, toUnixSeconds } from "../utils/time.js";
+import type { FormService } from "./fsm.js";
+import {
+  adminApplicationKeyboard,
+  adminReservationKeyboard,
+  applicationRejectReasonsKeyboard,
+  contactUserKeyboard,
+  joinRequestKeyboard,
+  missingSubscriptionsKeyboard,
+  reservationDueKeyboard,
+  reservationRejectReasonsKeyboard,
+} from "./keyboards.js";
+import {
+  applicationCard,
+  joinRequestCard,
+  missingSubscriptionsMessage,
+  profileText,
+  reservationCard,
+  subscriptionsConfirmedMessage,
+} from "./messages.js";
+import { pe, premiumEmoji } from "./premiumEmoji.js";
+import { applicationStatusLabel, joinRequestStatusLabel } from "./statusLabels.js";
+import { applicationRejectReasons, callbackText, commonText, reservationRejectReasons } from "./texts.js";
+
+export class CallbackHandlers {
+  constructor(
+    private readonly bot: Telegraf<BotContext>,
+    private readonly repos: Repositories,
+    private readonly subscriptions: SubscriptionService,
+    private readonly forms: FormService,
+    private readonly getConfig: () => AppConfig,
+  ) {}
+
+  register() {
+    this.bot.action("u:app", async (ctx) => {
+      await safeAnswerCallback(ctx);
+      await this.startApplicationFromCallback(ctx);
+    });
+    this.bot.action("u:res", async (ctx) => {
+      await safeAnswerCallback(ctx);
+      await this.startReservationFromCallback(ctx);
+    });
+    this.bot.action("u:waitlist", async (ctx) => {
+      await safeAnswerCallback(ctx);
+      await this.forms.startWaitlistReservation(ctx);
+    });
+    this.bot.action("u:help", async (ctx) => {
+      await safeAnswerCallback(ctx, callbackText.useHelpOrMenu);
+    });
+    this.bot.action("u:check", async (ctx) => {
+      await safeAnswerCallback(ctx);
+      await this.retryPendingSubscriptionFlow(ctx);
+    });
+    this.bot.action("form:confirm_username", async (ctx) => {
+      const handled = await this.forms.confirmProfileUsername(ctx);
+      if (!handled) await safeAnswerCallback(ctx, callbackText.noActiveUsernameStep, true);
+    });
+    this.bot.action("appeal:ban", async (ctx) => this.appealBan(ctx));
+
+    this.bot.action(/^app:a:(\d+)$/, async (ctx) => this.approveApplication(ctx, Number(ctx.match[1])));
+    this.bot.action(/^app:r:(\d+)$/, async (ctx) => this.showApplicationRejectReasons(ctx, Number(ctx.match[1])));
+    this.bot.action(/^app:rr:(\d+):([a-z]+)$/, async (ctx) =>
+      this.rejectApplicationReason(ctx, Number(ctx.match[1]), ctx.match[2]),
+    );
+    this.bot.action(/^app:s:(\d+)$/, async (ctx) => this.recheckApplication(ctx, Number(ctx.match[1])));
+    this.bot.action(/^app:p:(\d+)$/, async (ctx) => this.showApplicationProfile(ctx, Number(ctx.match[1])));
+
+    this.bot.action(/^res:a:(\d+)$/, async (ctx) => this.approveReservation(ctx, Number(ctx.match[1])));
+    this.bot.action(/^res:r:(\d+)$/, async (ctx) => this.showReservationRejectReasons(ctx, Number(ctx.match[1])));
+    this.bot.action(/^res:rr:(\d+):([a-z]+)$/, async (ctx) =>
+      this.rejectReservationReason(ctx, Number(ctx.match[1]), ctx.match[2]),
+    );
+    this.bot.action(/^res:s:(\d+)$/, async (ctx) => this.recheckReservation(ctx, Number(ctx.match[1])));
+    this.bot.action(/^res:p:(\d+)$/, async (ctx) => this.showReservationProfile(ctx, Number(ctx.match[1])));
+    this.bot.action(/^res:due:a:(\d+)$/, async (ctx) => this.confirmReservationActual(ctx, Number(ctx.match[1])));
+    this.bot.action(/^res:due:n:(\d+)$/, async (ctx) => this.cancelReservationAsOutdated(ctx, Number(ctx.match[1])));
+    this.bot.action(/^res:due:e:(\d+)$/, async (ctx) => this.askReservationExtensionDate(ctx, Number(ctx.match[1])));
+
+    this.bot.action(/^jr:a:(\d+)$/, async (ctx) =>
+      safeAnswerCallback(ctx, callbackText.joinRequestsAcceptedManually, true),
+    );
+    this.bot.action(/^jr:d:(\d+)$/, async (ctx) =>
+      safeAnswerCallback(ctx, callbackText.joinRequestsDeclinedManually, true),
+    );
+  }
+
+  async handleRejectReasonText(ctx: BotContext, text: string) {
+    if (!ctx.from) return false;
+    const state = this.repos.getState(ctx.from.id);
+    if (!state) return false;
+
+    const data = JSON.parse(state.data) as { id: number; messageId?: number };
+    if (state.flow === "reject_application") {
+      await this.rejectApplication(ctx, data.id, text.trim() || commonText.otherReason, data.messageId);
+      this.repos.clearState(ctx.from.id);
+      return true;
+    }
+
+    if (state.flow === "reject_reservation") {
+      await this.rejectReservation(ctx, data.id, text.trim() || commonText.otherReason, data.messageId);
+      this.repos.clearState(ctx.from.id);
+      return true;
+    }
+
+    return false;
+  }
+
+  private async startApplicationFromCallback(ctx: BotContext) {
+    await this.forms.startApplication(ctx);
+  }
+
+  private async startReservationFromCallback(ctx: BotContext) {
+    await this.forms.startReservation(ctx);
+  }
+
+  private async retryPendingSubscriptionFlow(ctx: BotContext) {
+    if (!ctx.from) return;
+    const state = this.repos.getState(ctx.from.id);
+    if (state?.flow === "application" && state.step === "await_subscription") {
+      const check = await this.subscriptions.check(ctx.from.id);
+      if (!check.life || !check.info) {
+        await safeEditMessageText(ctx, missingSubscriptionsMessage(check), {
+          parse_mode: "HTML",
+          ...missingSubscriptionsKeyboard(this.getConfig(), check),
+        });
+        return;
+      }
+      await safeEditMessageText(ctx, subscriptionsConfirmedMessage(), {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [] },
+      });
+      await this.startApplicationFromCallback(ctx);
+      return;
+    }
+    if (state?.flow === "reservation" && state.step === "await_subscription") {
+      const check = await this.subscriptions.check(ctx.from.id);
+      if (!check.life || !check.info) {
+        await safeEditMessageText(ctx, missingSubscriptionsMessage(check), {
+          parse_mode: "HTML",
+          ...missingSubscriptionsKeyboard(this.getConfig(), check),
+        });
+        return;
+      }
+      await safeEditMessageText(ctx, subscriptionsConfirmedMessage(), {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [] },
+      });
+      await this.startReservationFromCallback(ctx);
+      return;
+    }
+    if (state?.flow === "waitlist_reservation" && state.step === "await_subscription") {
+      const check = await this.subscriptions.check(ctx.from.id);
+      if (!check.life || !check.info) {
+        await safeEditMessageText(ctx, missingSubscriptionsMessage(check), {
+          parse_mode: "HTML",
+          ...missingSubscriptionsKeyboard(this.getConfig(), check),
+        });
+        return;
+      }
+      await safeEditMessageText(ctx, subscriptionsConfirmedMessage(), {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [] },
+      });
+      await this.forms.startWaitlistReservation(ctx);
+      return;
+    }
+    await ctx.reply(callbackText.subscriptionsCheckedChooseMenu);
+  }
+
+  private async approveApplication(ctx: BotContext, applicationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const app = this.repos.getApplicationById(applicationId);
+    if (!app) return safeAnswerCallback(ctx, commonText.applicationNotFound, true);
+    if (app.status !== "pending") return safeAnswerCallback(ctx, `Анкета уже обработана: ${applicationStatusLabel(app.status, app.reject_reason)}`, true);
+
+    const user = this.repos.getUserById(app.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+
+    const check = await this.subscriptions.check(user.telegram_id);
+    this.repos.updateApplicationSubscriptionSnapshot(app.id, check.life, check.info);
+    const codeWordValid = normalizeCodeWord(app.code_word_entered) === normalizeCodeWord(this.getConfig().codeWord);
+    const reasons = [];
+    if (!check.life) reasons.push("нет подписки на лайф-канал");
+    if (!check.info) reasons.push("нет подписки на инфо-канал");
+    if (!codeWordValid) reasons.push("неверное кодовое слово");
+    if (reasons.length) {
+      await safeSendMessage(
+        this.bot,
+        this.getConfig().adminChatId,
+        `Анкета #${app.id} не одобрена: ${reasons.join(", ")}.`,
+      );
+      return safeAnswerCallback(ctx, callbackText.approvalChecksFailed, true);
+    }
+
+    const expiresAt = addHours(new Date(), this.getConfig().inviteExpireHours);
+    let inviteLink: string;
+    try {
+      // Telegram forbids combining creates_join_request with member_limit,
+      // so one-person behavior is enforced by invite_links in SQLite.
+      const invite = await this.bot.telegram.createChatInviteLink(this.getConfig().mainChatId, {
+        name: `app-${app.id}-u-${user.telegram_id}`,
+        expire_date: toUnixSeconds(expiresAt),
+        creates_join_request: true,
+      } as never);
+      inviteLink = invite.invite_link;
+    } catch (error) {
+      logger.error({ error, applicationId }, "failed to create invite link");
+      await safeSendMessage(this.bot, this.getConfig().adminChatId, `Не удалось создать invite-ссылку для анкеты #${app.id}.`);
+      return safeAnswerCallback(ctx, callbackText.inviteCreationError, true);
+    }
+
+    this.repos.updateApplicationStatus(app.id, "approved", ctx.from!.id);
+    this.repos.createInviteLink({
+      applicationId: app.id,
+      userId: user.id,
+      inviteLink,
+      expiresAt: expiresAt.toISOString(),
+    });
+    this.repos.logAdminAction({
+      adminId: ctx.from!.id,
+      action: "application_approved",
+      targetUserId: user.telegram_id,
+      applicationId: app.id,
+    });
+
+    await this.notifyUser(
+      user.telegram_id,
+      `Твоя анкета одобрена! Вот личная ссылка для подачи заявки в основной чат.\n\n${inviteLink}\n\nСсылка временная и работает только для тебя.`,
+      `одобрение анкеты #${app.id}`,
+    );
+
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.check, "✅")} <b>Анкета #${app.id} одобрена</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПользователь: <code>${user.telegram_id}</code>\nЛичная ссылка отправлена пользователю.`,
+      { parse_mode: "HTML" },
+    );
+    const updated = this.repos.getApplicationById(app.id)!;
+    const previousCount = Math.max(0, this.repos.countApplicationsByUserId(user.id) - 1);
+    await safeEditMessageText(
+      ctx,
+      `${applicationCard(updated, user, check, previousCount)}\n\n<b>Решение:</b> ${pe(premiumEmoji.check, "✅")} одобрил ${this.adminLabel(ctx)}`,
+      withoutLinkPreview({ parse_mode: "HTML" }),
+    );
+    await safeAnswerCallback(ctx, callbackText.applicationApproved);
+  }
+
+  private async showApplicationRejectReasons(ctx: BotContext, applicationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const app = this.repos.getApplicationById(applicationId);
+    if (!app) return safeAnswerCallback(ctx, commonText.applicationNotFound, true);
+    if (app.status !== "pending") return safeAnswerCallback(ctx, `Анкета уже обработана: ${applicationStatusLabel(app.status, app.reject_reason)}`, true);
+    const user = this.repos.getUserById(app.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+    const check = { life: Boolean(app.life_channel_subscribed), info: Boolean(app.info_channel_subscribed) };
+    const previousCount = Math.max(0, this.repos.countApplicationsByUserId(user.id) - 1);
+    await safeEditMessageText(
+      ctx,
+      `${applicationCard(app, user, check, previousCount)}\n\n${callbackText.chooseRejectReason}`,
+      withoutLinkPreview({ parse_mode: "HTML", ...applicationRejectReasonsKeyboard(applicationId) }),
+    );
+    await safeAnswerCallback(ctx);
+  }
+
+  private async rejectApplicationReason(ctx: BotContext, applicationId: number, code: string) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    if (code === "other") {
+      this.repos.setState(ctx.from!.id, "reject_application", "reason", {
+        id: applicationId,
+        messageId: this.callbackMessageId(ctx),
+      });
+      await ctx.reply(`Напишите причину отказа для анкеты #${applicationId}.`);
+      return safeAnswerCallback(ctx);
+    }
+    await this.rejectApplication(ctx, applicationId, applicationRejectReasons[code as keyof typeof applicationRejectReasons] ?? commonText.otherReason);
+  }
+
+  private async rejectApplication(ctx: BotContext, applicationId: number, reason: string, messageId?: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const app = this.repos.getApplicationById(applicationId);
+    if (!app) return safeAnswerCallback(ctx, commonText.applicationNotFound, true);
+    if (app.status !== "pending") return safeAnswerCallback(ctx, `Анкета уже обработана: ${applicationStatusLabel(app.status, app.reject_reason)}`, true);
+    const user = this.repos.getUserById(app.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+
+    this.repos.updateApplicationStatus(app.id, "rejected", ctx.from!.id, reason);
+    this.repos.logAdminAction({
+      adminId: ctx.from!.id,
+      action: "application_rejected",
+      targetUserId: user.telegram_id,
+      applicationId: app.id,
+      details: reason,
+    });
+
+    await this.notifyUser(user.telegram_id, `К сожалению, анкету отклонили.\nПричина: ${reason}`, `отказ по анкете #${app.id}`);
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.cross, "❌")} <b>Анкета #${app.id} отклонена</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПричина: ${escapeHtml(reason)}`,
+      { parse_mode: "HTML" },
+    );
+    const check = { life: Boolean(app.life_channel_subscribed), info: Boolean(app.info_channel_subscribed) };
+    const updated = this.repos.getApplicationById(app.id)!;
+    const previousCount = Math.max(0, this.repos.countApplicationsByUserId(user.id) - 1);
+    await this.editDecisionMessage(
+      ctx,
+      messageId,
+      `${applicationCard(updated, user, check, previousCount)}\n\n<b>Решение:</b> ${pe(premiumEmoji.cross, "❌")} отказал ${this.adminLabel(ctx)}\n<b>Причина:</b> ${escapeHtml(reason)}`,
+      withoutLinkPreview({ parse_mode: "HTML" }),
+    );
+    await safeAnswerCallback(ctx, callbackText.applicationRejected);
+  }
+
+  private async recheckApplication(ctx: BotContext, applicationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const app = this.repos.getApplicationById(applicationId);
+    if (!app) return safeAnswerCallback(ctx, commonText.applicationNotFound, true);
+    const user = this.repos.getUserById(app.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+    const check = await this.subscriptions.check(user.telegram_id);
+    this.repos.updateApplicationSubscriptionSnapshot(app.id, check.life, check.info);
+    const updated = this.repos.getApplicationById(app.id)!;
+    const previousCount = Math.max(0, this.repos.countApplicationsByUserId(user.id) - 1);
+    await safeEditMessageText(ctx, applicationCard(updated, user, check, previousCount), {
+      ...withoutLinkPreview(),
+      parse_mode: "HTML",
+      ...adminApplicationKeyboard(app.id),
+    });
+    await safeAnswerCallback(ctx, commonText.subscriptionRechecked);
+  }
+
+  private async showApplicationProfile(ctx: BotContext, applicationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const app = this.repos.getApplicationById(applicationId);
+    const user = app ? this.repos.getUserById(app.user_id) : undefined;
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+    await ctx.reply(profileText(user), { parse_mode: "HTML" });
+    await safeAnswerCallback(ctx);
+  }
+
+  private async approveReservation(ctx: BotContext, reservationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const reservation = this.repos.getReservationById(reservationId);
+    if (!reservation) return safeAnswerCallback(ctx, commonText.reservationNotFound, true);
+    if (reservation.status !== "pending") return safeAnswerCallback(ctx, commonText.alreadyReviewed, true);
+    const user = this.repos.getUserById(reservation.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+
+    if (reservation.reservation_kind === "waitlist") {
+      this.repos.updateReservationStatus(reservation.id, "approved", ctx.from!.id);
+      this.repos.logAdminAction({
+        adminId: ctx.from!.id,
+        action: "waitlist_reservation_approved",
+        targetUserId: user.telegram_id,
+        details: reservation.role_name,
+      });
+      await this.notifyUser(
+        user.telegram_id,
+        `Ваша бронь роли «${reservation.role_name}» одобрена и поставлена в очередь закрытого набора. Когда в основном чате появится место, бот уточнит, актуальна ли бронь.`,
+        `одобрение waitlist-брони #${reservation.id}`,
+      );
+      await safeSendMessage(
+        this.bot,
+        this.getConfig().adminChatId,
+        `${pe(premiumEmoji.check, "✅")} <b>Бронь #${reservation.id} одобрена</b>
+
+╭ <b>Очередь закрытого набора</b>
+├ Роль: <b>${escapeHtml(reservation.role_name)}</b>
+╰ Срок: до появления места в основном чате
+
+╭ <b>Решение</b>
+├ Администратор: ${this.adminLabel(ctx)}
+╰ Пользователь: <code>${user.telegram_id}</code>`,
+        { parse_mode: "HTML" },
+      );
+      const updated = this.repos.getReservationById(reservation.id)!;
+      const check = await this.subscriptions.check(user.telegram_id);
+      await safeEditMessageText(
+        ctx,
+        `${reservationCard(updated, user, check)}\n\n<b>Решение:</b> ${pe(premiumEmoji.check, "✅")} бронь закрытого набора одобрил ${this.adminLabel(ctx)}`,
+        withoutLinkPreview({ parse_mode: "HTML" }),
+      );
+      await safeAnswerCallback(ctx, callbackText.reservationApproved);
+      await this.forms.checkWaitlistQueue();
+      return;
+    }
+
+    this.repos.updateReservationStatus(reservation.id, "approved", ctx.from!.id);
+    this.repos.logAdminAction({
+      adminId: ctx.from!.id,
+      action: "reservation_approved",
+      targetUserId: user.telegram_id,
+      details: `${reservation.role_name} until ${reservation.reserve_until}`,
+    });
+    await this.notifyUser(
+      user.telegram_id,
+      `Ваша бронь роли «${reservation.role_name}» одобрена до ${formatDate(reservation.reserve_until)}. В день брони бот уточнит, актуальна ли она, и при подтверждении отправит ссылку на основной чат.`,
+      `одобрение брони #${reservation.id}`,
+    );
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.check, "✅")} <b>Бронь #${reservation.id} одобрена</b>
+
+╭ <b>Роль</b>
+├ ${escapeHtml(reservation.role_name)}
+╰ До: ${escapeHtml(formatDate(reservation.reserve_until))}
+
+╭ <b>Решение</b>
+├ Администратор: ${this.adminLabel(ctx)}
+╰ Пользователь: <code>${user.telegram_id}</code>`,
+      { parse_mode: "HTML" },
+    );
+    const updated = this.repos.getReservationById(reservation.id)!;
+    const check = await this.subscriptions.check(user.telegram_id);
+    await safeEditMessageText(
+      ctx,
+      `${reservationCard(updated, user, check)}\n\n<b>Решение:</b> ${pe(premiumEmoji.check, "✅")} бронь одобрил ${this.adminLabel(ctx)}`,
+      withoutLinkPreview({ parse_mode: "HTML" }),
+    );
+    await safeAnswerCallback(ctx, callbackText.reservationApproved);
+  }
+
+  private async showReservationRejectReasons(ctx: BotContext, reservationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const reservation = this.repos.getReservationById(reservationId);
+    if (!reservation) return safeAnswerCallback(ctx, commonText.reservationNotFound, true);
+    if (reservation.status !== "pending") return safeAnswerCallback(ctx, commonText.alreadyReviewed, true);
+    const user = this.repos.getUserById(reservation.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+    const check = await this.subscriptions.check(user.telegram_id);
+    await safeEditMessageText(
+      ctx,
+      `${reservationCard(reservation, user, check)}\n\n${callbackText.chooseRejectReason}`,
+      withoutLinkPreview({ parse_mode: "HTML", ...reservationRejectReasonsKeyboard(reservationId) }),
+    );
+    await safeAnswerCallback(ctx);
+  }
+
+  private async rejectReservationReason(ctx: BotContext, reservationId: number, code: string) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    if (code === "other") {
+      this.repos.setState(ctx.from!.id, "reject_reservation", "reason", {
+        id: reservationId,
+        messageId: this.callbackMessageId(ctx),
+      });
+      await ctx.reply(`Напишите причину отказа для брони #${reservationId}.`);
+      return safeAnswerCallback(ctx);
+    }
+    await this.rejectReservation(ctx, reservationId, reservationRejectReasons[code as keyof typeof reservationRejectReasons] ?? commonText.otherReason);
+  }
+
+  private async rejectReservation(ctx: BotContext, reservationId: number, reason: string, messageId?: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const reservation = this.repos.getReservationById(reservationId);
+    if (!reservation) return safeAnswerCallback(ctx, commonText.reservationNotFound, true);
+    if (reservation.status !== "pending") return safeAnswerCallback(ctx, commonText.alreadyReviewed, true);
+    const user = this.repos.getUserById(reservation.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+
+    this.repos.updateReservationStatus(reservation.id, "rejected", ctx.from!.id, reason);
+    this.repos.logAdminAction({
+      adminId: ctx.from!.id,
+      action: "reservation_rejected",
+      targetUserId: user.telegram_id,
+      details: reason,
+    });
+    await this.notifyUser(
+      user.telegram_id,
+      `К сожалению, бронь роли отклонили.\nПричина: ${reason}`,
+      `отказ по брони #${reservation.id}`,
+    );
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.cross, "❌")} <b>Бронь #${reservation.id} отклонена</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПричина: ${escapeHtml(reason)}`,
+      { parse_mode: "HTML" },
+    );
+    const updated = this.repos.getReservationById(reservation.id)!;
+    const check = await this.subscriptions.check(user.telegram_id);
+    await this.editDecisionMessage(
+      ctx,
+      messageId,
+      `${reservationCard(updated, user, check)}\n\n<b>Решение:</b> ${pe(premiumEmoji.cross, "❌")} бронь отклонил ${this.adminLabel(ctx)}\n<b>Причина:</b> ${escapeHtml(reason)}`,
+      withoutLinkPreview({ parse_mode: "HTML" }),
+    );
+    await safeAnswerCallback(ctx, callbackText.reservationRejected);
+  }
+
+  private async recheckReservation(ctx: BotContext, reservationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const reservation = this.repos.getReservationById(reservationId);
+    if (!reservation) return safeAnswerCallback(ctx, commonText.reservationNotFound, true);
+    const user = this.repos.getUserById(reservation.user_id);
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+    const check = await this.subscriptions.check(user.telegram_id);
+    await safeEditMessageText(ctx, reservationCard(reservation, user, check), {
+      ...withoutLinkPreview(),
+      parse_mode: "HTML",
+      ...adminReservationKeyboard(reservation.id),
+    });
+    await safeAnswerCallback(ctx, commonText.subscriptionRechecked);
+  }
+
+  private async showReservationProfile(ctx: BotContext, reservationId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const reservation = this.repos.getReservationById(reservationId);
+    const user = reservation ? this.repos.getUserById(reservation.user_id) : undefined;
+    if (!user) return safeAnswerCallback(ctx, commonText.userNotFound, true);
+    await ctx.reply(profileText(user), { parse_mode: "HTML" });
+    await safeAnswerCallback(ctx);
+  }
+
+  private async confirmReservationActual(ctx: BotContext, reservationId: number) {
+    const data = this.getOwnedReservation(ctx, reservationId);
+    if (!data) return safeAnswerCallback(ctx, callbackText.reservationUnavailable, true);
+    const { reservation, user } = data;
+    const isWaitlist = reservation.reservation_kind === "waitlist";
+    if (reservation.status !== "approved") return safeAnswerCallback(ctx, callbackText.reservationInactive, true);
+
+    if (isWaitlist) {
+      const capacity = await this.forms.mainChatCapacity();
+      if (capacity.isFull) {
+        this.repos.resetWaitlistNotification(reservation.id);
+        await safeEditMessageText(ctx, "Место уже заняли, поэтому бронь вернулась в очередь. Бот снова напишет, когда появится место.", {
+          reply_markup: { inline_keyboard: [] },
+        });
+        await safeAnswerCallback(ctx, callbackText.waitlistReturned);
+        return;
+      }
+    }
+
+    const expiresAt = addHours(new Date(), this.getConfig().inviteExpireHours);
+    let inviteLink: string;
+    try {
+      const invite = await this.bot.telegram.createChatInviteLink(this.getConfig().mainChatId, {
+        name: `res-${reservation.id}-u-${user.telegram_id}`,
+        expire_date: toUnixSeconds(expiresAt),
+        member_limit: 1,
+      } as never);
+      inviteLink = invite.invite_link;
+    } catch (error) {
+      logger.error({ error, reservationId }, "failed to create reservation invite link");
+      return safeAnswerCallback(ctx, callbackText.linkCreationFailed, true);
+    }
+
+    this.repos.updateReservationStatus(reservation.id, "used", null);
+    await safeEditMessageText(ctx, `Бронь роли «${reservation.role_name}» подтверждена. Ссылка отправлена ниже.`, {
+      reply_markup: { inline_keyboard: [] },
+    });
+    await ctx.reply(
+      `Вот личная ссылка для подачи заявки в основной чат по брони роли «${reservation.role_name}»:\n\n${inviteLink}\n\nСсылка временная и работает только для вас.`,
+    );
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `Пользователь ${user.telegram_id} подтвердил актуальность брони #${reservation.id}: ${reservation.role_name}. Ссылка отправлена.`,
+    );
+    await safeAnswerCallback(ctx, callbackText.linkSent);
+  }
+
+  private async cancelReservationAsOutdated(ctx: BotContext, reservationId: number) {
+    const data = this.getOwnedReservation(ctx, reservationId);
+    if (!data) return safeAnswerCallback(ctx, callbackText.reservationUnavailable, true);
+    const { reservation, user } = data;
+
+    this.repos.deleteReservation(reservation.id);
+    await safeEditMessageText(
+      ctx,
+      `Бронь роли «${reservation.role_name}» удалена. Если понадобится, вы сможете создать новую бронь через меню.`,
+      { reply_markup: { inline_keyboard: [] } },
+    );
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `Пользователь ${user.telegram_id} отменил бронь #${reservation.id}: ${reservation.role_name}. Бронь удалена.`,
+    );
+    if (reservation.reservation_kind === "waitlist") await this.forms.checkWaitlistQueue();
+    await safeAnswerCallback(ctx, callbackText.reservationDeleted);
+  }
+
+  private async askReservationExtensionDate(ctx: BotContext, reservationId: number) {
+    const data = this.getOwnedReservation(ctx, reservationId);
+    if (!data) return safeAnswerCallback(ctx, callbackText.reservationUnavailable, true);
+    const { reservation } = data;
+    if (reservation.reservation_kind === "waitlist") {
+      await safeAnswerCallback(ctx, callbackText.datedReservationCannotExtend, true);
+      return;
+    }
+
+    this.repos.setState(ctx.from!.id, "extend_reservation", "date", { id: reservation.id });
+    await safeEditMessageText(ctx, `Бронь роли «${reservation.role_name}» будет продлена. Напишите новую дату в формате ДД.ММ.ГГГГ.`, {
+      reply_markup: { inline_keyboard: [] },
+    });
+    await safeAnswerCallback(ctx);
+  }
+
+  private getOwnedReservation(ctx: BotContext, reservationId: number) {
+    if (!ctx.from) return null;
+    const reservation = this.repos.getReservationById(reservationId);
+    const user = reservation ? this.repos.getUserById(reservation.user_id) : undefined;
+    if (!reservation || !user || user.telegram_id !== ctx.from.id) return null;
+    return { reservation, user };
+  }
+
+  private async approveJoinRequest(ctx: BotContext, joinRequestId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const data = this.getJoinBundle(joinRequestId);
+    if (!data) return safeAnswerCallback(ctx, callbackText.joinRequestNotFound, true);
+    const { request, user, invite, app } = data;
+    if (request.status !== "pending") return safeAnswerCallback(ctx, `Заявка уже обработана: ${joinRequestStatusLabel(request.status)}`, true);
+    if (invite.status !== "active" || isPastIso(invite.expires_at)) {
+      return safeAnswerCallback(ctx, callbackText.inviteInactive, true);
+    }
+
+    try {
+      await this.bot.telegram.approveChatJoinRequest(this.getConfig().mainChatId, user.telegram_id);
+    } catch (error) {
+      logger.error({ error, joinRequestId }, "failed to approve chat join request");
+      return safeAnswerCallback(ctx, callbackText.telegramDidNotAcceptJoinRequest, true);
+    }
+
+    this.repos.setJoinRequestStatus(request.id, "approved", ctx.from!.id);
+    this.repos.setInviteLinkStatus(invite.id, "used");
+    this.repos.updateApplicationStatus(app.id, "joined", app.reviewed_by_admin_id ?? ctx.from!.id);
+    this.repos.logAdminAction({
+      adminId: ctx.from!.id,
+      action: "join_request_approved",
+      targetUserId: user.telegram_id,
+      applicationId: app.id,
+      details: `join_request ${request.id}`,
+    });
+    await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
+    await this.notifyUser(user.telegram_id, "Добро пожаловать в основной чат! Заявка принята.", `принятие join request #${request.id}`);
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.check, "✅")} <b>Заявка #${request.id} принята</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПользователь: <code>${user.telegram_id}</code>\nАнкета: <code>#${app.id}</code>`,
+      { parse_mode: "HTML" },
+    );
+    const updatedRequest = this.repos.getJoinRequestById(request.id)!;
+    const check = await this.subscriptions.check(user.telegram_id);
+    await safeEditMessageText(
+      ctx,
+      `${joinRequestCard({ request: updatedRequest, app, user, invite, subscriptions: check })}\n\n<b>Решение:</b> ${pe(premiumEmoji.check, "✅")} принял ${this.adminLabel(ctx)}`,
+      withoutLinkPreview({ parse_mode: "HTML" }),
+    );
+    await safeAnswerCallback(ctx, callbackText.joinRequestApproved);
+  }
+
+  private async declineJoinRequest(ctx: BotContext, joinRequestId: number) {
+    if (!(await this.ensureAdmin(ctx))) return;
+    const data = this.getJoinBundle(joinRequestId);
+    if (!data) return safeAnswerCallback(ctx, callbackText.joinRequestNotFound, true);
+    const { request, user, invite } = data;
+    if (request.status !== "pending") return safeAnswerCallback(ctx, `Заявка уже обработана: ${joinRequestStatusLabel(request.status)}`, true);
+
+    try {
+      await this.bot.telegram.declineChatJoinRequest(this.getConfig().mainChatId, user.telegram_id);
+    } catch (error) {
+      logger.error({ error, joinRequestId }, "failed to decline chat join request");
+      return safeAnswerCallback(ctx, callbackText.telegramDidNotDeclineJoinRequest, true);
+    }
+
+    this.repos.setJoinRequestStatus(request.id, "rejected", ctx.from!.id);
+    this.repos.setInviteLinkStatus(invite.id, "revoked");
+    this.repos.logAdminAction({
+      adminId: ctx.from!.id,
+      action: "join_request_rejected",
+      targetUserId: user.telegram_id,
+      applicationId: data.app.id,
+      details: `join_request ${request.id}`,
+    });
+    await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
+    await this.notifyUser(user.telegram_id, "Заявка на вход в чат отклонена администрацией.", `отклонение join request #${request.id}`);
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.cross, "❌")} <b>Заявка #${request.id} отклонена</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПользователь: <code>${user.telegram_id}</code>`,
+      { parse_mode: "HTML" },
+    );
+    const updatedRequest = this.repos.getJoinRequestById(request.id)!;
+    const check = await this.subscriptions.check(user.telegram_id);
+    await safeEditMessageText(
+      ctx,
+      `${joinRequestCard({ request: updatedRequest, app: data.app, user, invite, subscriptions: check })}\n\n<b>Решение:</b> ${pe(premiumEmoji.cross, "❌")} отклонил ${this.adminLabel(ctx)}`,
+      withoutLinkPreview({ parse_mode: "HTML" }),
+    );
+    await safeAnswerCallback(ctx, callbackText.joinRequestRejected);
+  }
+
+  private getJoinBundle(joinRequestId: number) {
+    const request = this.repos.getJoinRequestById(joinRequestId);
+    if (!request?.user_id || !request.invite_link_id || !request.application_id) return null;
+    const user = this.repos.getUserById(request.user_id);
+    const invite = this.repos.getInviteLinkById(request.invite_link_id);
+    const app = this.repos.getApplicationById(request.application_id);
+    if (!user || !invite || !app) return null;
+    return { request, user, invite, app };
+  }
+
+  private async appealBan(ctx: BotContext) {
+    if (!ctx.from) return;
+    const user = this.repos.upsertUser({
+      telegramId: ctx.from.id,
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      lastName: ctx.from.last_name,
+    });
+    // Без username администрации не за что зацепиться, чтобы связаться с юзером.
+    // Просим установить его и нажать «Оспорить» снова (кнопку при этом не убираем).
+    if (!user.username) {
+      await safeAnswerCallback(ctx, callbackText.usernameRequired, true);
+      await ctx.reply(
+        "Чтобы администрация могла связаться с вами по обращению, установите @username в настройках Telegram (Настройки → Имя пользователя), а затем нажмите «Оспорить» ещё раз.",
+      );
+      return;
+    }
+    await safeSendMessage(
+      this.bot,
+      this.getConfig().adminChatId,
+      `${pe(premiumEmoji.notification, "⚠")} <b>Обжалование блокировки</b>\n\nПользователь ${mentionUser(user)} (<code>${user.telegram_id}</code>, ${escapeHtml(
+        usernameOrDash(user.username),
+      )}) хочет оспорить блокировку в боте и просит администрацию связаться с ним.`,
+      withoutLinkPreview({ parse_mode: "HTML", ...(contactUserKeyboard(user) ?? {}) }),
+    );
+    await safeEditMessageText(ctx, "Обращение отправлено администрации. Ожидайте, с вами свяжутся.");
+    await safeAnswerCallback(ctx, callbackText.appealSent);
+  }
+
+  private async ensureAdmin(ctx: BotContext) {
+    if (isAdmin(this.getConfig(), ctx.from?.id)) return true;
+    await safeAnswerCallback(ctx, commonText.adminOnlyButton, true);
+    return false;
+  }
+
+  private adminLabel(ctx: BotContext) {
+    return ctx.from ? adminDisplay(this.getConfig(), ctx.from) : "администратор";
+  }
+
+  private callbackMessageId(ctx: BotContext) {
+    const callbackQuery = ctx.callbackQuery;
+    if (callbackQuery && "message" in callbackQuery && callbackQuery.message) {
+      return callbackQuery.message.message_id;
+    }
+    return undefined;
+  }
+
+  private async editDecisionMessage(
+    ctx: BotContext,
+    messageId: number | undefined,
+    text: string,
+    extra: Record<string, unknown>,
+  ) {
+    if (messageId) {
+      try {
+        await this.bot.telegram.editMessageText(this.getConfig().adminChatId, messageId, undefined, text, extra);
+        return;
+      } catch (error) {
+        logger.warn({ error, messageId }, "failed to edit stored admin message");
+      }
+    }
+    await safeEditMessageText(ctx, text, extra);
+  }
+
+  private async notifyUser(telegramId: number, text: string, context: string) {
+    const sent = await safeSendMessage(this.bot, telegramId, text);
+    if (!sent) {
+      await safeSendMessage(
+        this.bot,
+        this.getConfig().adminChatId,
+        `Бот не смог написать пользователю ${telegramId} в личку: ${context}.`,
+      );
+    }
+  }
+}
+
+export async function sendJoinRequestForAdmin(
+  bot: Telegraf<BotContext>,
+  repos: Repositories,
+  config: AppConfig,
+  requestId: number,
+  subscriptions: SubscriptionService,
+) {
+  const request = repos.getJoinRequestById(requestId);
+  if (!request?.user_id || !request.invite_link_id || !request.application_id) return;
+  const user = repos.getUserById(request.user_id) as UserRecord | undefined;
+  const invite = repos.getInviteLinkById(request.invite_link_id);
+  const app = repos.getApplicationById(request.application_id) as ApplicationRecord | undefined;
+  if (!user || !invite || !app) return;
+  const check = await subscriptions.check(user.telegram_id);
+  await safeSendMessage(
+    bot,
+    config.adminChatId,
+    joinRequestCard({ request, app, user, invite, subscriptions: check }),
+    withoutLinkPreview({ parse_mode: "HTML", ...joinRequestKeyboard(request.id) }),
+  );
+}
