@@ -1,6 +1,5 @@
 .gradle
 build/
-dist/
 node_modules/
 data/
 .env
@@ -48,7 +47,6 @@ bin/
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
-/dist/
 /nbdist/
 /.nb-gradle/
 

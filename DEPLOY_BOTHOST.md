@@ -18,13 +18,21 @@ node dist/index.js
 
 ## Node.js
 
-Для проекта нужен Node.js 24+. В корневом `Dockerfile` используется:
+Если Bothost запускает проект через авто-Node окружение, выбирайте:
+
+```text
+node:22 Alpine
+```
+
+В репозитории хранится готовая папка `dist/`, поэтому авто-запуск `node dist/index.js` работает без отдельного build-step.
+
+Если Bothost запускает проект через Dockerfile, в корневом `Dockerfile` используется:
 
 ```dockerfile
 FROM node:24-bookworm-slim
 ```
 
-`node:22-alpine` для текущего проекта лучше не использовать: в `package.json` указано `node >=24.0.0`, а база работает через встроенный `node:sqlite`.
+`package.json` допускает Node.js 22.17+, потому что на Bothost сейчас используется Node.js 22.23.0.
 
 ## База данных
 
@@ -47,4 +55,3 @@ DATABASE_URL=file:/app/data/flood_games.sqlite
 ## Переменные окружения
 
 Настоящий `.env` не нужно заливать в GitHub. Значения задаются в панели Bothost. Список переменных есть в `.env.example`.
-
