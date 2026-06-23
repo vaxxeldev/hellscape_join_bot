@@ -5,6 +5,7 @@ const roleFiles = {
     genshin: "roles genshin.txt",
     hsr: "roles hsr.txt",
 };
+const occupiedRoleMarker = "🧪";
 export class RoleService {
     repos;
     getConfig;
@@ -92,7 +93,7 @@ export class RoleService {
         if (!match)
             return "unknown";
         const segment = text.slice(match.end, matches.find((item) => item.index > match.index)?.index ?? text.length);
-        if (segment.includes("💎"))
+        if (segment.includes(occupiedRoleMarker))
             return "occupied";
         if (/@[a-zA-Z0-9_]{3,}/.test(segment))
             return "reserved";
@@ -162,7 +163,7 @@ function postPlainText(html) {
     const message = /<div class="tgme_widget_message_text js-message_text"[^>]*>([\s\S]*?)<\/div><\/div><div class="media_not_supported_cont">/i.exec(html)?.[1];
     return stripTags(decodeHtml((message ?? html).replace(/<br\s*\/?>/gi, " ").replace(/<tg-emoji[\s\S]*?<\/tg-emoji>/gi, (value) => {
         const emoji = /<b>(.*?)<\/b>/i.exec(value)?.[1];
-        return emoji ? decodeHtml(emoji) : " 💎 ";
+        return emoji ? decodeHtml(emoji) : ` ${occupiedRoleMarker} `;
     }))).replace(/\s+/g, " ");
 }
 function stripTags(value) {
