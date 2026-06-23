@@ -3,8 +3,9 @@ import type { AppConfig } from "../config/env.js";
 import { reloadConfig } from "../config/env.js";
 import type { Repositories } from "../db/repositories.js";
 import { isAdmin } from "../services/admin.js";
-import { safeReplyWithBanner, safeRevokeInviteLink, withoutLinkPreview } from "../services/telegram.js";
+import { safeReplyWithBanner, withoutLinkPreview } from "../services/telegram.js";
 import type { SubscriptionService } from "../services/subscriptions.js";
+import { wipeDatabaseWithTelegram } from "../services/wipe.js";
 import type { FormService } from "./fsm.js";
 import type { BotContext } from "../types.js";
 import { mainMenuKeyboard } from "./keyboards.js";
@@ -238,23 +239,8 @@ export class CommandHandlers {
   private async wipe(ctx: BotContext) {
     if (!ctx.from || ctx.from.id !== this.getConfig().developerId) return;
 
-    const result = this.repos.wipeAllData();
-    let revokedInviteLinks = 0;
-    let failedInviteRevokes = 0;
-    for (const invite of result.activeInviteLinks) {
-      const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
-      if (revoked) revokedInviteLinks += 1;
-      else failedInviteRevokes += 1;
-    }
-
-    await ctx.reply(
-      wipeDatabaseResultMessage({
-        ...result,
-        revokedInviteLinks,
-        failedInviteRevokes,
-      }),
-      { parse_mode: "HTML" },
-    );
+    const result = await wipeDatabaseWithTelegram(this.bot, this.repos, this.getConfig);
+    await ctx.reply(wipeDatabaseResultMessage(result), { parse_mode: "HTML" });
   }
 
   private async adminOnly(ctx: BotContext, fn: () => Promise<void>) {

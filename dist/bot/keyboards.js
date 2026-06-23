@@ -124,3 +124,36 @@ export function contactUserKeyboard(user) {
         [urlButton(buttonText.contact, `https://t.me/${user.username.replace(/^@/, "")}`, premiumEmoji.send, "success")],
     ]);
 }
+export function developerPanelKeyboard() {
+    return inlineKeyboard([
+        [
+            callbackButton("Статистика", "dev:stats", premiumEmoji.statsChart, "primary"),
+            callbackButton("Рассылка", "dev:broadcast", premiumEmoji.announcement, "primary"),
+        ],
+        [callbackButton("Wipe базы данных", "dev:wipe", premiumEmoji.trash, "danger")],
+    ]);
+}
+export function developerBackKeyboard() {
+    return inlineKeyboard([[callbackButton("Назад", "dev:back", premiumEmoji.down)]]);
+}
+export function developerBroadcastMediaKeyboard() {
+    return inlineKeyboard([
+        [callbackButton("Пропустить медиа", "dev:bc:skip_media", premiumEmoji.check, "success")],
+        [callbackButton("Назад", "dev:back", premiumEmoji.down)],
+    ]);
+}
+export function developerBroadcastButtonKeyboard() {
+    return inlineKeyboard([
+        [callbackButton("Добавить кнопку", "dev:bc:add_button", premiumEmoji.link, "primary")],
+        [callbackButton("Без кнопки", "dev:bc:skip_button", premiumEmoji.check, "success")],
+        [callbackButton("Назад", "dev:back", premiumEmoji.down)],
+    ]);
+}
+export function developerBroadcastConfirmKeyboard() {
+    return inlineKeyboard([
+        [
+            callbackButton("Отправить", "dev:bc:confirm", premiumEmoji.send, "success"),
+            callbackButton("Отмена", "dev:bc:cancel", premiumEmoji.cross, "danger"),
+        ],
+    ]);
+}

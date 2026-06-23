@@ -32,6 +32,13 @@ export class RoleService {
             return { ok: true, role: role.canonical };
         return { ok: false, reason: postStatus, role: role.canonical };
     }
+    catalogStats() {
+        return {
+            total: this.roles.length,
+            genshin: this.roles.filter((role) => role.universe === "genshin").length,
+            hsr: this.roles.filter((role) => role.universe === "hsr").length,
+        };
+    }
     loadRoles() {
         return Object.entries(roleFiles).flatMap(([universe, file]) => {
             const filePath = path.resolve(process.cwd(), "roles", file);

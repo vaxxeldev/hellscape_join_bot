@@ -216,6 +216,7 @@ export function wipeDatabaseResultMessage(input) {
 ╰ Не удалось отозвать: ${failedRevokes}
 
 ╭ <b>Служебное</b>
+├ Отслеживаемые чаты: <code>${input.botChats}</code>
 ╰ Админ-действия: <code>${input.adminActions}</code>`;
 }
 export function adminOnlyCommandMessage() {

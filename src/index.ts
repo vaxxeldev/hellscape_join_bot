@@ -5,6 +5,7 @@ import { Database } from "./db/database.js";
 import { Repositories } from "./db/repositories.js";
 import { CallbackHandlers } from "./bot/callbacks.js";
 import { CommandHandlers } from "./bot/commands.js";
+import { DeveloperHandlers } from "./bot/developer.js";
 import { FormService } from "./bot/fsm.js";
 import { JoinRequestHandlers } from "./bot/joinRequests.js";
 import { mainMenuKeyboard } from "./bot/keyboards.js";
@@ -31,6 +32,7 @@ const roles = new RoleService(repos, getConfig);
 const forms = new FormService(bot, repos, subscriptions, roles, getConfig);
 const callbacks = new CallbackHandlers(bot, repos, subscriptions, forms, getConfig);
 const commands = new CommandHandlers(bot, repos, forms, subscriptions, getConfig);
+const developer = new DeveloperHandlers(bot, repos, roles, getConfig);
 const joinRequests = new JoinRequestHandlers(bot, repos, subscriptions, getConfig);
 
 bot.catch((error, ctx) => {
@@ -38,10 +40,26 @@ bot.catch((error, ctx) => {
 });
 
 bot.use(createThrottle(getConfig));
+bot.use(async (ctx, next) => {
+  const config = getConfig();
+  const isMainChatInteraction =
+    (ctx.updateType === "message" || ctx.updateType === "callback_query") &&
+    ctx.chat?.id === config.mainChatId;
+
+  if (isMainChatInteraction && ctx.from?.id !== config.developerId) return;
+  return next();
+});
 
 commands.register();
+developer.register();
 callbacks.register();
 joinRequests.register();
+
+bot.on("message", async (ctx, next) => {
+  const handledDeveloperMessage = await developer.handleMessage(ctx);
+  if (handledDeveloperMessage) return;
+  return next();
+});
 
 bot.on("text", async (ctx) => {
   const text = ctx.message.text;
@@ -96,7 +114,7 @@ async function launchWithRetry() {
   while (true) {
     try {
       await bot.launch({
-        allowedUpdates: ["message", "callback_query", "chat_join_request", "chat_member"],
+        allowedUpdates: ["message", "callback_query", "chat_join_request", "chat_member", "my_chat_member"],
       });
       return;
     } catch (error) {

@@ -12,7 +12,8 @@ export type FormFlow =
   | "waitlist_reservation"
   | "extend_reservation"
   | "reject_application"
-  | "reject_reservation";
+  | "reject_reservation"
+  | "developer_broadcast";
 
 export interface UserRecord {
   id: number;
@@ -93,6 +94,16 @@ export interface UserStateRecord {
   data: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BotChatRecord {
+  chat_id: number;
+  type: string;
+  title: string | null;
+  username: string | null;
+  status: string;
+  first_seen_at: string;
+  last_seen_at: string;
 }
 
 export interface SubscriptionCheck {

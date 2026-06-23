@@ -24,6 +24,7 @@ export type DatabaseWipeResult = {
   roleReservations: number;
   adminActions: number;
   userStates: number;
+  botChats: number;
   activeInviteLinks: InviteLinkRecord[];
 };
 
@@ -194,6 +195,7 @@ export class Repositories {
       const roleReservations = this.db.run("DELETE FROM role_reservations").changes;
       const userStates = this.db.run("DELETE FROM user_states").changes;
       const adminActions = this.db.run("DELETE FROM admin_actions").changes;
+      const botChats = this.db.run("DELETE FROM bot_chats").changes;
       const users = this.db.run("DELETE FROM users").changes;
 
       this.db.run(
@@ -218,6 +220,7 @@ export class Repositories {
         roleReservations,
         adminActions,
         userStates,
+        botChats,
         activeInviteLinks,
       };
     });
@@ -553,6 +556,41 @@ export class Repositories {
     this.db.run("DELETE FROM user_states WHERE telegram_id = :telegramId", { telegramId });
   }
 
+  listBroadcastRecipients() {
+    return this.db.query<{ telegram_id: number }>(
+      "SELECT telegram_id FROM users WHERE is_banned = 0 ORDER BY updated_at DESC",
+    );
+  }
+
+  upsertBotChat(input: {
+    chatId: number;
+    type: string;
+    title?: string | null;
+    username?: string | null;
+    status: string;
+  }) {
+    this.db.run(
+      `
+      INSERT INTO bot_chats (chat_id, type, title, username, status, last_seen_at)
+      VALUES (:chatId, :type, :title, :username, :status, :lastSeenAt)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        type = excluded.type,
+        title = excluded.title,
+        username = excluded.username,
+        status = excluded.status,
+        last_seen_at = excluded.last_seen_at
+      `,
+      {
+        chatId: input.chatId,
+        type: input.type,
+        title: input.title ?? null,
+        username: input.username ?? null,
+        status: input.status,
+        lastSeenAt: nowIso(),
+      },
+    );
+  }
+
   logAdminAction(input: {
     adminId: number;
     action: string;
@@ -596,5 +634,78 @@ export class Repositories {
     const uniqueUsers = this.db.get<{ count: number }>("SELECT COUNT(*) AS count FROM users")?.count ?? 0;
 
     return { total, pending, approved, rejected, joined, today, uniqueUsers };
+  }
+
+  developerStats() {
+    const count = (sql: string) => this.db.get<{ count: number }>(sql)?.count ?? 0;
+    const byStatus = (table: string) =>
+      Object.fromEntries(
+        this.db
+          .query<{ status: string; count: number }>(`SELECT status, COUNT(*) AS count FROM ${table} GROUP BY status`)
+          .map((row) => [row.status, row.count]),
+      ) as Record<string, number>;
+
+    const applicationStatuses = byStatus("applications");
+    const reservationStatuses = byStatus("role_reservations");
+    const inviteStatuses = byStatus("invite_links");
+    const joinRequestStatuses = byStatus("join_requests");
+
+    const activeBotChatWhere = "status NOT IN ('left', 'kicked')";
+
+    return {
+      users: {
+        total: count("SELECT COUNT(*) AS count FROM users"),
+        banned: count("SELECT COUNT(*) AS count FROM users WHERE is_banned = 1"),
+        broadcastRecipients: count("SELECT COUNT(*) AS count FROM users WHERE is_banned = 0"),
+      },
+      applications: {
+        total: count("SELECT COUNT(*) AS count FROM applications"),
+        today: count("SELECT COUNT(*) AS count FROM applications WHERE date(created_at) = date('now')"),
+        pending: applicationStatuses.pending ?? 0,
+        approved: applicationStatuses.approved ?? 0,
+        rejected: applicationStatuses.rejected ?? 0,
+        joined: applicationStatuses.joined ?? 0,
+      },
+      reservations: {
+        total: count("SELECT COUNT(*) AS count FROM role_reservations"),
+        pending: reservationStatuses.pending ?? 0,
+        approved: reservationStatuses.approved ?? 0,
+        rejected: reservationStatuses.rejected ?? 0,
+        expired: reservationStatuses.expired ?? 0,
+        used: reservationStatuses.used ?? 0,
+        waitlist: count("SELECT COUNT(*) AS count FROM role_reservations WHERE reservation_kind = 'waitlist'"),
+      },
+      roles: {
+        occupiedFromApplications: count(
+          "SELECT COUNT(DISTINCT lower(role)) AS count FROM applications WHERE status IN ('approved', 'joined')",
+        ),
+        reservedFromReservations: count(
+          "SELECT COUNT(DISTINCT lower(role_name)) AS count FROM role_reservations WHERE status IN ('pending', 'approved')",
+        ),
+      },
+      inviteLinks: {
+        total: count("SELECT COUNT(*) AS count FROM invite_links"),
+        active: inviteStatuses.active ?? 0,
+        used: inviteStatuses.used ?? 0,
+        revoked: inviteStatuses.revoked ?? 0,
+        expired: inviteStatuses.expired ?? 0,
+      },
+      joinRequests: {
+        total: count("SELECT COUNT(*) AS count FROM join_requests"),
+        pending: joinRequestStatuses.pending ?? 0,
+        approved: joinRequestStatuses.approved ?? 0,
+        rejected: joinRequestStatuses.rejected ?? 0,
+      },
+      botChats: {
+        total: count("SELECT COUNT(*) AS count FROM bot_chats"),
+        active: count(`SELECT COUNT(*) AS count FROM bot_chats WHERE ${activeBotChatWhere}`),
+        channels: count(`SELECT COUNT(*) AS count FROM bot_chats WHERE type = 'channel' AND ${activeBotChatWhere}`),
+        groups: count(`SELECT COUNT(*) AS count FROM bot_chats WHERE type IN ('group', 'supergroup') AND ${activeBotChatWhere}`),
+      },
+      service: {
+        userStates: count("SELECT COUNT(*) AS count FROM user_states"),
+        adminActions: count("SELECT COUNT(*) AS count FROM admin_actions"),
+      },
+    };
   }
 }

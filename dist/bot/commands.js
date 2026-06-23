@@ -1,6 +1,7 @@
 import { reloadConfig } from "../config/env.js";
 import { isAdmin } from "../services/admin.js";
-import { safeReplyWithBanner, safeRevokeInviteLink, withoutLinkPreview } from "../services/telegram.js";
+import { safeReplyWithBanner, withoutLinkPreview } from "../services/telegram.js";
+import { wipeDatabaseWithTelegram } from "../services/wipe.js";
 import { mainMenuKeyboard } from "./keyboards.js";
 import { activeReservationMessage, adminHelpMessage, adminOnlyCommandMessage, adminPanelMessage, applicationCard, applicationNotFoundMessage, applicationStatusMessage, applicationUserNotFoundMessage, applicationsListMessage, banResultMessage, banUsageMessage, changeReservationUsageMessage, configReloadedMessage, helpMessage, noActiveReservationMessage, noApplicationsForAdminMessage, noApplicationsMessage, noReservationsMessage, openApplicationUsageMessage, reservationNotFoundMessage, reservationsListMessage, reservationStatusChangedMessage, rulesMessage, statsMessage, userNotFoundInDatabaseMessage, welcomeMessage, wipeDatabaseResultMessage, } from "./messages.js";
 export class CommandHandlers {
@@ -191,21 +192,8 @@ export class CommandHandlers {
     async wipe(ctx) {
         if (!ctx.from || ctx.from.id !== this.getConfig().developerId)
             return;
-        const result = this.repos.wipeAllData();
-        let revokedInviteLinks = 0;
-        let failedInviteRevokes = 0;
-        for (const invite of result.activeInviteLinks) {
-            const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
-            if (revoked)
-                revokedInviteLinks += 1;
-            else
-                failedInviteRevokes += 1;
-        }
-        await ctx.reply(wipeDatabaseResultMessage({
-            ...result,
-            revokedInviteLinks,
-            failedInviteRevokes,
-        }), { parse_mode: "HTML" });
+        const result = await wipeDatabaseWithTelegram(this.bot, this.repos, this.getConfig);
+        await ctx.reply(wipeDatabaseResultMessage(result), { parse_mode: "HTML" });
     }
     async adminOnly(ctx, fn) {
         if (!isAdmin(this.getConfig(), ctx.from?.id)) {

@@ -279,6 +279,7 @@ export function wipeDatabaseResultMessage(input: {
   roleReservations: number;
   adminActions: number;
   userStates: number;
+  botChats: number;
   revokedInviteLinks: number;
   failedInviteRevokes: number;
 }) {
@@ -302,6 +303,7 @@ export function wipeDatabaseResultMessage(input: {
 ╰ Не удалось отозвать: ${failedRevokes}
 
 ╭ <b>Служебное</b>
+├ Отслеживаемые чаты: <code>${input.botChats}</code>
 ╰ Админ-действия: <code>${input.adminActions}</code>`;
 }
 
