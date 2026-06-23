@@ -2,6 +2,7 @@ import type { Telegraf } from "telegraf";
 import type { AppConfig } from "../config/env.js";
 import type { Repositories } from "../db/repositories.js";
 import {
+  adminApplicationKeyboard,
   adminReservationKeyboard,
   appealBanKeyboard,
   applicationRoleLinksKeyboard,
@@ -18,7 +19,6 @@ import {
   alreadyMainChatMemberMessage,
   applicationCard,
   applicationCodeStepMessage,
-  applicationInviteCreationFailedAdminMessage,
   applicationPrivateOnlyMessage,
   applicationRoleStepMessage,
   applicationSubmittedMessage,
@@ -55,13 +55,13 @@ import {
   waitlistRoleStepMessage,
   waitlistSubmittedMessage,
 } from "./messages.js";
-import type { BotContext, SubscriptionCheck, UserRecord } from "../types.js";
+import type { BotContext, UserRecord } from "../types.js";
 import type { SubscriptionService } from "../services/subscriptions.js";
 import type { RoleService } from "../services/roles.js";
 import { isMessageNotModifiedError, safeReplyWithBanner, safeSendBanner, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
 import { logger } from "../utils/logger.js";
 import { escapeHtml, normalizeCodeWord } from "../utils/text.js";
-import { addHours, formatDate, parseUserDate, toUnixSeconds } from "../utils/time.js";
+import { parseUserDate } from "../utils/time.js";
 
 type ApplicationDraft = {
   role?: string;
@@ -666,43 +666,16 @@ export class FormService {
     });
     this.repos.clearState(ctx.from!.id);
 
-    const expiresAt = addHours(new Date(), this.getConfig().inviteExpireHours);
-    let inviteLink: string | null = null;
-    try {
-      const invite = await this.bot.telegram.createChatInviteLink(this.getConfig().mainChatId, {
-        name: `app-${app.id}-u-${user.telegram_id}`,
-        expire_date: toUnixSeconds(expiresAt),
-        creates_join_request: true,
-      } as never);
-      inviteLink = invite.invite_link;
-      this.repos.createInviteLink({
-        applicationId: app.id,
-        userId: user.id,
-        inviteLink,
-        expiresAt: expiresAt.toISOString(),
-      });
-      this.repos.updateApplicationStatus(app.id, "approved", null);
-    } catch (error) {
-      logger.error({ error, applicationId: app.id }, "failed to create invite link after application");
-      await safeSendMessage(
-        this.bot,
-        this.getConfig().adminChatId,
-        applicationInviteCreationFailedAdminMessage(app.id),
-      );
-    }
-
-    const updatedApp = this.repos.getApplicationById(app.id) ?? app;
     const previousCount = Math.max(0, this.repos.countApplicationsByUserId(user.id) - 1);
     await safeReplyWithBanner(
       ctx,
-      inviteLink
-        ? "link_sending"
-        : "cancel_link_sending",
-      applicationSubmittedMessage(inviteLink),
+      "under_consideration",
+      applicationSubmittedMessage(),
       { parse_mode: "HTML" },
     );
-    await safeSendBanner(this.bot, this.getConfig().adminChatId, "questionnaire_to_admin_chat_sent", applicationCard(updatedApp, user, check, previousCount), withoutLinkPreview({
+    await safeSendBanner(this.bot, this.getConfig().adminChatId, "questionnaire_to_admin_chat_sent", applicationCard(app, user, check, previousCount), withoutLinkPreview({
       parse_mode: "HTML",
+      ...adminApplicationKeyboard(app.id),
     }));
   }
 

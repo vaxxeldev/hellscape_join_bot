@@ -2,7 +2,7 @@ import { reloadConfig } from "../config/env.js";
 import { isAdmin } from "../services/admin.js";
 import { safeReplyWithBanner, safeRevokeInviteLink, withoutLinkPreview } from "../services/telegram.js";
 import { mainMenuKeyboard } from "./keyboards.js";
-import { activeReservationMessage, adminHelpMessage, adminOnlyCommandMessage, adminPanelMessage, applicationCard, applicationNotFoundMessage, applicationStatusMessage, applicationUserNotFoundMessage, applicationsListMessage, banResultMessage, banUsageMessage, changeReservationUsageMessage, cleanupApplicationsResultMessage, cleanupApplicationsUsageMessage, configReloadedMessage, helpMessage, noActiveReservationMessage, noApplicationsForAdminMessage, noApplicationsMessage, noReservationsMessage, openApplicationUsageMessage, reservationNotFoundMessage, reservationsListMessage, reservationStatusChangedMessage, rulesMessage, statsMessage, userNotFoundInDatabaseMessage, welcomeMessage, wipeDatabaseResultMessage, wipeDatabaseUsageMessage, } from "./messages.js";
+import { activeReservationMessage, adminHelpMessage, adminOnlyCommandMessage, adminPanelMessage, applicationCard, applicationNotFoundMessage, applicationStatusMessage, applicationUserNotFoundMessage, applicationsListMessage, banResultMessage, banUsageMessage, changeReservationUsageMessage, configReloadedMessage, helpMessage, noActiveReservationMessage, noApplicationsForAdminMessage, noApplicationsMessage, noReservationsMessage, openApplicationUsageMessage, reservationNotFoundMessage, reservationsListMessage, reservationStatusChangedMessage, rulesMessage, statsMessage, userNotFoundInDatabaseMessage, welcomeMessage, wipeDatabaseResultMessage, } from "./messages.js";
 export class CommandHandlers {
     bot;
     repos;
@@ -50,8 +50,7 @@ export class CommandHandlers {
         this.bot.command("reservations", async (ctx) => this.reservations(ctx));
         this.bot.command("expire_reserve", async (ctx) => this.changeReservation(ctx, "expired"));
         this.bot.command("use_reserve", async (ctx) => this.changeReservation(ctx, "used"));
-        this.bot.command("cleanup_applications", async (ctx) => this.cleanupApplications(ctx));
-        this.bot.command("wipe_database", async (ctx) => this.wipeDatabase(ctx));
+        this.bot.command("wipe", async (ctx) => this.wipe(ctx));
     }
     async status(ctx) {
         if (!ctx.from)
@@ -189,59 +188,24 @@ export class CommandHandlers {
             await ctx.reply(reservationStatusChangedMessage(id, status), { parse_mode: "HTML" });
         });
     }
-    async cleanupApplications(ctx) {
-        await this.adminOnly(ctx, async () => {
-            const [date, confirmation] = this.commandArgs(ctx);
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? "") || confirmation !== "CONFIRM") {
-                await ctx.reply(cleanupApplicationsUsageMessage(), { parse_mode: "HTML" });
-                return;
-            }
-            const result = this.repos.cleanupApplicationsByDate(date);
-            let revokedInviteLinks = 0;
-            let failedInviteRevokes = 0;
-            for (const invite of result.activeInviteLinks) {
-                const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
-                if (revoked)
-                    revokedInviteLinks += 1;
-                else
-                    failedInviteRevokes += 1;
-            }
-            this.repos.logAdminAction({
-                adminId: ctx.from.id,
-                action: "applications_cleanup",
-                details: `date=${date}; applications=${result.applications}; invite_links=${result.inviteLinks}; join_requests=${result.joinRequests}`,
-            });
-            await ctx.reply(cleanupApplicationsResultMessage({
-                date,
-                ...result,
-                revokedInviteLinks,
-                failedInviteRevokes,
-            }), { parse_mode: "HTML" });
-        });
-    }
-    async wipeDatabase(ctx) {
-        await this.adminOnly(ctx, async () => {
-            const [confirmation] = this.commandArgs(ctx);
-            if (confirmation !== "CONFIRM_FULL_WIPE") {
-                await ctx.reply(wipeDatabaseUsageMessage(), { parse_mode: "HTML" });
-                return;
-            }
-            const result = this.repos.wipeAllData();
-            let revokedInviteLinks = 0;
-            let failedInviteRevokes = 0;
-            for (const invite of result.activeInviteLinks) {
-                const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
-                if (revoked)
-                    revokedInviteLinks += 1;
-                else
-                    failedInviteRevokes += 1;
-            }
-            await ctx.reply(wipeDatabaseResultMessage({
-                ...result,
-                revokedInviteLinks,
-                failedInviteRevokes,
-            }), { parse_mode: "HTML" });
-        });
+    async wipe(ctx) {
+        if (!ctx.from || ctx.from.id !== this.getConfig().developerId)
+            return;
+        const result = this.repos.wipeAllData();
+        let revokedInviteLinks = 0;
+        let failedInviteRevokes = 0;
+        for (const invite of result.activeInviteLinks) {
+            const revoked = await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
+            if (revoked)
+                revokedInviteLinks += 1;
+            else
+                failedInviteRevokes += 1;
+        }
+        await ctx.reply(wipeDatabaseResultMessage({
+            ...result,
+            revokedInviteLinks,
+            failedInviteRevokes,
+        }), { parse_mode: "HTML" });
     }
     async adminOnly(ctx, fn) {
         if (!isAdmin(this.getConfig(), ctx.from?.id)) {

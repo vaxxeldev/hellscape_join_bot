@@ -26,6 +26,8 @@ COPY messages_banner_gif ./messages_banner_gif
 COPY premium_emoji.json ./
 COPY .env.example ./.env.example
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data /usr/src/app/data && chown -R node:node /app/data /usr/src/app
+
+USER node
 
 CMD ["node", "dist/index.js"]

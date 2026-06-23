@@ -3,20 +3,18 @@ import type { AppConfig } from "../config/env.js";
 import type { Repositories } from "../db/repositories.js";
 import { adminDisplay, isAdmin } from "../services/admin.js";
 import type { SubscriptionService } from "../services/subscriptions.js";
-import { safeAnswerCallback, safeEditMessageText, safeRevokeInviteLink, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
+import { safeAnswerCallback, safeEditMessageText, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
 import type { ApplicationRecord, BotContext, UserRecord } from "../types.js";
 import { logger } from "../utils/logger.js";
 import { escapeHtml, mentionUser, normalizeCodeWord, usernameOrDash } from "../utils/text.js";
-import { addHours, formatDate, isPastIso, toUnixSeconds } from "../utils/time.js";
+import { addHours, formatDate, toUnixSeconds } from "../utils/time.js";
 import type { FormService } from "./fsm.js";
 import {
   adminApplicationKeyboard,
   adminReservationKeyboard,
   applicationRejectReasonsKeyboard,
   contactUserKeyboard,
-  joinRequestKeyboard,
   missingSubscriptionsKeyboard,
-  reservationDueKeyboard,
   reservationRejectReasonsKeyboard,
 } from "./keyboards.js";
 import {
@@ -28,7 +26,7 @@ import {
   subscriptionsConfirmedMessage,
 } from "./messages.js";
 import { pe, premiumEmoji } from "./premiumEmoji.js";
-import { applicationStatusLabel, joinRequestStatusLabel } from "./statusLabels.js";
+import { applicationStatusLabel } from "./statusLabels.js";
 import { applicationRejectReasons, callbackText, commonText, reservationRejectReasons } from "./texts.js";
 
 export class CallbackHandlers {
@@ -84,13 +82,6 @@ export class CallbackHandlers {
     this.bot.action(/^res:due:a:(\d+)$/, async (ctx) => this.confirmReservationActual(ctx, Number(ctx.match[1])));
     this.bot.action(/^res:due:n:(\d+)$/, async (ctx) => this.cancelReservationAsOutdated(ctx, Number(ctx.match[1])));
     this.bot.action(/^res:due:e:(\d+)$/, async (ctx) => this.askReservationExtensionDate(ctx, Number(ctx.match[1])));
-
-    this.bot.action(/^jr:a:(\d+)$/, async (ctx) =>
-      safeAnswerCallback(ctx, callbackText.joinRequestsAcceptedManually, true),
-    );
-    this.bot.action(/^jr:d:(\d+)$/, async (ctx) =>
-      safeAnswerCallback(ctx, callbackText.joinRequestsDeclinedManually, true),
-    );
   }
 
   async handleRejectReasonText(ctx: BotContext, text: string) {
@@ -612,102 +603,6 @@ export class CallbackHandlers {
     return { reservation, user };
   }
 
-  private async approveJoinRequest(ctx: BotContext, joinRequestId: number) {
-    if (!(await this.ensureAdmin(ctx))) return;
-    const data = this.getJoinBundle(joinRequestId);
-    if (!data) return safeAnswerCallback(ctx, callbackText.joinRequestNotFound, true);
-    const { request, user, invite, app } = data;
-    if (request.status !== "pending") return safeAnswerCallback(ctx, `Заявка уже обработана: ${joinRequestStatusLabel(request.status)}`, true);
-    if (invite.status !== "active" || isPastIso(invite.expires_at)) {
-      return safeAnswerCallback(ctx, callbackText.inviteInactive, true);
-    }
-
-    try {
-      await this.bot.telegram.approveChatJoinRequest(this.getConfig().mainChatId, user.telegram_id);
-    } catch (error) {
-      logger.error({ error, joinRequestId }, "failed to approve chat join request");
-      return safeAnswerCallback(ctx, callbackText.telegramDidNotAcceptJoinRequest, true);
-    }
-
-    this.repos.setJoinRequestStatus(request.id, "approved", ctx.from!.id);
-    this.repos.setInviteLinkStatus(invite.id, "used");
-    this.repos.updateApplicationStatus(app.id, "joined", app.reviewed_by_admin_id ?? ctx.from!.id);
-    this.repos.logAdminAction({
-      adminId: ctx.from!.id,
-      action: "join_request_approved",
-      targetUserId: user.telegram_id,
-      applicationId: app.id,
-      details: `join_request ${request.id}`,
-    });
-    await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
-    await this.notifyUser(user.telegram_id, "Добро пожаловать в основной чат! Заявка принята.", `принятие join request #${request.id}`);
-    await safeSendMessage(
-      this.bot,
-      this.getConfig().adminChatId,
-      `${pe(premiumEmoji.check, "✅")} <b>Заявка #${request.id} принята</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПользователь: <code>${user.telegram_id}</code>\nАнкета: <code>#${app.id}</code>`,
-      { parse_mode: "HTML" },
-    );
-    const updatedRequest = this.repos.getJoinRequestById(request.id)!;
-    const check = await this.subscriptions.check(user.telegram_id);
-    await safeEditMessageText(
-      ctx,
-      `${joinRequestCard({ request: updatedRequest, app, user, invite, subscriptions: check })}\n\n<b>Решение:</b> ${pe(premiumEmoji.check, "✅")} принял ${this.adminLabel(ctx)}`,
-      withoutLinkPreview({ parse_mode: "HTML" }),
-    );
-    await safeAnswerCallback(ctx, callbackText.joinRequestApproved);
-  }
-
-  private async declineJoinRequest(ctx: BotContext, joinRequestId: number) {
-    if (!(await this.ensureAdmin(ctx))) return;
-    const data = this.getJoinBundle(joinRequestId);
-    if (!data) return safeAnswerCallback(ctx, callbackText.joinRequestNotFound, true);
-    const { request, user, invite } = data;
-    if (request.status !== "pending") return safeAnswerCallback(ctx, `Заявка уже обработана: ${joinRequestStatusLabel(request.status)}`, true);
-
-    try {
-      await this.bot.telegram.declineChatJoinRequest(this.getConfig().mainChatId, user.telegram_id);
-    } catch (error) {
-      logger.error({ error, joinRequestId }, "failed to decline chat join request");
-      return safeAnswerCallback(ctx, callbackText.telegramDidNotDeclineJoinRequest, true);
-    }
-
-    this.repos.setJoinRequestStatus(request.id, "rejected", ctx.from!.id);
-    this.repos.setInviteLinkStatus(invite.id, "revoked");
-    this.repos.logAdminAction({
-      adminId: ctx.from!.id,
-      action: "join_request_rejected",
-      targetUserId: user.telegram_id,
-      applicationId: data.app.id,
-      details: `join_request ${request.id}`,
-    });
-    await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
-    await this.notifyUser(user.telegram_id, "Заявка на вход в чат отклонена администрацией.", `отклонение join request #${request.id}`);
-    await safeSendMessage(
-      this.bot,
-      this.getConfig().adminChatId,
-      `${pe(premiumEmoji.cross, "❌")} <b>Заявка #${request.id} отклонена</b>\nАдминистратор: ${this.adminLabel(ctx)}\nПользователь: <code>${user.telegram_id}</code>`,
-      { parse_mode: "HTML" },
-    );
-    const updatedRequest = this.repos.getJoinRequestById(request.id)!;
-    const check = await this.subscriptions.check(user.telegram_id);
-    await safeEditMessageText(
-      ctx,
-      `${joinRequestCard({ request: updatedRequest, app: data.app, user, invite, subscriptions: check })}\n\n<b>Решение:</b> ${pe(premiumEmoji.cross, "❌")} отклонил ${this.adminLabel(ctx)}`,
-      withoutLinkPreview({ parse_mode: "HTML" }),
-    );
-    await safeAnswerCallback(ctx, callbackText.joinRequestRejected);
-  }
-
-  private getJoinBundle(joinRequestId: number) {
-    const request = this.repos.getJoinRequestById(joinRequestId);
-    if (!request?.user_id || !request.invite_link_id || !request.application_id) return null;
-    const user = this.repos.getUserById(request.user_id);
-    const invite = this.repos.getInviteLinkById(request.invite_link_id);
-    const app = this.repos.getApplicationById(request.application_id);
-    if (!user || !invite || !app) return null;
-    return { request, user, invite, app };
-  }
-
   private async appealBan(ctx: BotContext) {
     if (!ctx.from) return;
     const user = this.repos.upsertUser({
@@ -802,6 +697,6 @@ export async function sendJoinRequestForAdmin(
     bot,
     config.adminChatId,
     joinRequestCard({ request, app, user, invite, subscriptions: check }),
-    withoutLinkPreview({ parse_mode: "HTML", ...joinRequestKeyboard(request.id) }),
+    withoutLinkPreview({ parse_mode: "HTML" }),
   );
 }

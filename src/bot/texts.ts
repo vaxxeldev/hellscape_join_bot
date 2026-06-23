@@ -18,8 +18,6 @@ export const buttonText = {
   extendReservation: "Продлить бронь",
   appeal: "Оспорить",
   contact: "Связаться",
-  acceptToChat: "Принять в чат",
-  declineJoinRequest: "Отклонить заявку",
 } as const;
 
 export const applicationRejectReasons = {
@@ -104,12 +102,6 @@ export const callbackText = {
   linkSent: "Ссылка отправлена",
   reservationDeleted: "Бронь удалена",
   datedReservationCannotExtend: "Эта бронь без даты, её нельзя продлить",
-  joinRequestNotFound: "Заявка не найдена",
-  inviteInactive: "Ссылка уже не активна",
-  telegramDidNotAcceptJoinRequest: "Telegram API не принял заявку",
-  telegramDidNotDeclineJoinRequest: "Telegram API не отклонил заявку",
-  joinRequestApproved: "Заявка принята",
-  joinRequestRejected: "Заявка отклонена",
   usernameRequired: "Сначала установите @username",
   appealSent: "Обращение отправлено администрации",
 } as const;

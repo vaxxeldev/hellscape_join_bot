@@ -50,8 +50,6 @@ export function adminHelpMessage() {
 <code>/reservations</code> — активные брони
 <code>/expire_reserve ID</code> — закрыть бронь
 <code>/use_reserve ID</code> — отметить использованной
-<code>/cleanup_applications YYYY-MM-DD CONFIRM</code> — удалить анкеты за дату
-<code>/wipe_database CONFIRM_FULL_WIPE</code> — полностью очистить данные
 <code>/reload</code> — перечитать .env`;
 }
 
@@ -273,34 +271,6 @@ export function reservationStatusChangedMessage(id: number, status: "expired" | 
   return `Бронь <code>#${id}</code> теперь в статусе <code>${reservationStatusLabel(status)}</code>.`;
 }
 
-export function cleanupApplicationsUsageMessage() {
-  return "Использование: <code>/cleanup_applications YYYY-MM-DD CONFIRM</code>\nНапример: <code>/cleanup_applications 2026-06-21 CONFIRM</code>";
-}
-
-export function cleanupApplicationsResultMessage(input: {
-  date: string;
-  applications: number;
-  inviteLinks: number;
-  joinRequests: number;
-  adminActions: number;
-  userStates: number;
-  revokedInviteLinks: number;
-  failedInviteRevokes: number;
-}) {
-  return `<b>Очистка анкет за ${escapeHtml(input.date)}</b>
-Анкет удалено: <code>${input.applications}</code>
-Invite-ссылок в БД удалено: <code>${input.inviteLinks}</code>
-Заявок на вступление удалено: <code>${input.joinRequests}</code>
-Админ-действий удалено: <code>${input.adminActions}</code>
-Состояний заполнения удалено: <code>${input.userStates}</code>
-Активных invite-ссылок отозвано в Telegram: <code>${input.revokedInviteLinks}</code>
-Не удалось отозвать ссылок: <code>${input.failedInviteRevokes}</code>`;
-}
-
-export function wipeDatabaseUsageMessage() {
-  return "Использование: <code>/wipe_database CONFIRM_FULL_WIPE</code>\nКоманда полностью удалит пользователей, анкеты, брони, invite-ссылки, заявки на вступление и состояния заполнения.";
-}
-
 export function wipeDatabaseResultMessage(input: {
   users: number;
   applications: number;
@@ -469,10 +439,8 @@ export function applicationInviteCreationFailedAdminMessage(applicationId: numbe
   return `Не удалось создать invite-ссылку для анкеты #${applicationId}. Отправьте ссылку пользователю вручную.`;
 }
 
-export function applicationSubmittedMessage(inviteLink: string | null) {
-  return inviteLink
-    ? `<b>Анкета отправлена</b>\nВот личная ссылка для подачи заявки в основной чат:\n\n${inviteLink}\n\nСсылка временная и работает только для тебя. После заявки администрация примет её в самом чате.`
-    : "<b>Анкета отправлена</b>\nНе удалось автоматически создать ссылку. Администрация увидит анкету и поможет вручную.";
+export function applicationSubmittedMessage() {
+  return "<b>Анкета отправлена</b>\nЯ напишу, когда администрация примет решение.";
 }
 
 export function reservationSubmittedMessage() {

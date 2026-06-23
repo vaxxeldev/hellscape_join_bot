@@ -5,6 +5,7 @@ import { escapeHtml } from "../utils/text.js";
 import { isPastIso } from "../utils/time.js";
 import { pe, premiumEmoji } from "./premiumEmoji.js";
 import { applicationStatusLabel, inviteLinkStatusLabel } from "./statusLabels.js";
+import { sendJoinRequestForAdmin } from "./callbacks.js";
 export class JoinRequestHandlers {
     bot;
     repos;
@@ -71,12 +72,13 @@ export class JoinRequestHandlers {
             }
             return;
         }
-        this.repos.createJoinRequest({
+        const joinRequest = this.repos.createJoinRequest({
             applicationId: app.id,
             userId: user.id,
             inviteLinkId: invite.id,
             status: "pending",
         });
+        await sendJoinRequestForAdmin(this.bot, this.repos, this.getConfig(), joinRequest.id, this.subscriptions);
     }
     async declineTelegramJoinRequest(userId) {
         try {

@@ -110,11 +110,3 @@ export function contactUserKeyboard(user) {
         [urlButton(buttonText.contact, `https://t.me/${user.username.replace(/^@/, "")}`, premiumEmoji.send, "success")],
     ]);
 }
-export function joinRequestKeyboard(joinRequestId) {
-    return inlineKeyboard([
-        [
-            callbackButton(buttonText.acceptToChat, `jr:a:${joinRequestId}`, premiumEmoji.userApproved, "success"),
-            callbackButton(buttonText.declineJoinRequest, `jr:d:${joinRequestId}`, premiumEmoji.userRejected, "danger"),
-        ],
-    ]);
-}

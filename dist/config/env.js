@@ -8,11 +8,21 @@ const boolFromString = z
 const csvIds = z
     .string()
     .optional()
-    .transform((value) => (value ?? "")
+    .transform((value, ctx) => (value ?? "")
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean)
-    .map((part) => Number(part)));
+    .map((part) => {
+    const id = Number(part);
+    if (!Number.isInteger(id)) {
+        ctx.addIssue({
+            code: "custom",
+            message: `Expected numeric Telegram user IDs separated by commas, got "${part}"`,
+        });
+        return z.NEVER;
+    }
+    return id;
+}));
 const optionalId = z
     .string()
     .optional()
