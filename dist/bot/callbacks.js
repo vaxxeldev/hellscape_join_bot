@@ -46,6 +46,10 @@ export class CallbackHandlers {
             if (!handled)
                 await safeAnswerCallback(ctx, callbackText.noActiveUsernameStep, true);
         });
+        this.bot.action("form:cancel", async (ctx) => {
+            await safeAnswerCallback(ctx);
+            await this.forms.cancel(ctx);
+        });
         this.bot.action("appeal:ban", async (ctx) => this.appealBan(ctx));
         this.bot.action(/^app:a:(\d+)$/, async (ctx) => this.approveApplication(ctx, Number(ctx.match[1])));
         this.bot.action(/^app:r:(\d+)$/, async (ctx) => this.showApplicationRejectReasons(ctx, Number(ctx.match[1])));

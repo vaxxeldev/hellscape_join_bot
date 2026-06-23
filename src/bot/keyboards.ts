@@ -22,6 +22,7 @@ export function missingSubscriptionsKeyboard(config: AppConfig, check?: Subscrip
   return inlineKeyboard([
     ...(channelButtons.length ? [channelButtons] : []),
     [callbackButton(buttonText.checkSubscription, "u:check", premiumEmoji.check, "success")],
+    cancelKeyboardRow(),
   ]);
 }
 
@@ -35,15 +36,30 @@ export function applicationRoleLinksKeyboard(config: AppConfig) {
       urlButton("Genshin Impact", config.rolePostUrls.genshin, premiumEmoji.tag),
       urlButton("HSR", config.rolePostUrls.hsr, premiumEmoji.tag),
     ],
+    cancelKeyboardRow(),
   ]);
 }
 
 export function confirmUsernameKeyboard() {
-  return inlineKeyboard([[callbackButton(buttonText.confirm, "form:confirm_username", premiumEmoji.check, "success")]]);
+  return inlineKeyboard([
+    [callbackButton(buttonText.confirm, "form:confirm_username", premiumEmoji.check, "success")],
+    cancelKeyboardRow(),
+  ]);
 }
 
 export function codeRulesKeyboard(config: AppConfig) {
-  return inlineKeyboard([[urlButton(buttonText.rules, config.rulesUrl, premiumEmoji.file, "primary")]]);
+  return inlineKeyboard([
+    [urlButton(buttonText.rules, config.rulesUrl, premiumEmoji.file, "primary")],
+    cancelKeyboardRow(),
+  ]);
+}
+
+export function cancelKeyboard() {
+  return inlineKeyboard([cancelKeyboardRow()]);
+}
+
+function cancelKeyboardRow() {
+  return [callbackButton(buttonText.cancel, "form:cancel", premiumEmoji.cross, "danger")];
 }
 
 export function adminApplicationKeyboard(applicationId: number) {

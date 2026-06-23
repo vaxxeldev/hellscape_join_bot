@@ -6,6 +6,7 @@ import {
   adminReservationKeyboard,
   appealBanKeyboard,
   applicationRoleLinksKeyboard,
+  cancelKeyboard,
   codeRulesKeyboard,
   confirmUsernameKeyboard,
   missingSubscriptionsKeyboard,
@@ -34,6 +35,7 @@ import {
   joinLimitBannedMessage,
   manualBannedMessage,
   missingSubscriptionsMessage,
+  noActiveFillingMessage,
   pastDateMessage,
   profileUsernameMissingMessage,
   recruitmentClosedMessage,
@@ -58,7 +60,7 @@ import {
 import type { BotContext, UserRecord } from "../types.js";
 import type { SubscriptionService } from "../services/subscriptions.js";
 import type { RoleService } from "../services/roles.js";
-import { isMessageNotModifiedError, safeReplyWithBanner, safeSendBanner, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
+import { isMessageNotModifiedError, safeEditMessageText, safeReplyWithBanner, safeSendBanner, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
 import { logger } from "../utils/logger.js";
 import { escapeHtml, normalizeCodeWord } from "../utils/text.js";
 import { parseUserDate } from "../utils/time.js";
@@ -268,8 +270,22 @@ export class FormService {
 
   async cancel(ctx: BotContext) {
     if (!ctx.from) return;
+    const state = this.repos.getState(ctx.from.id);
+    if (!state) {
+      await ctx.reply(noActiveFillingMessage(), { parse_mode: "HTML" });
+      return;
+    }
+
     this.repos.clearState(ctx.from.id);
-    await safeReplyWithBanner(ctx, "cancel", fillingCancelledMessage());
+    if (ctx.callbackQuery) {
+      await safeEditMessageText(ctx, fillingCancelledMessage(), {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [] },
+      });
+      return;
+    }
+
+    await safeReplyWithBanner(ctx, "cancel", fillingCancelledMessage(), { parse_mode: "HTML" });
   }
 
   async confirmProfileUsername(ctx: BotContext) {
@@ -326,7 +342,7 @@ export class FormService {
       this.repos.setState(telegramId, "application", "username", { ...data, role: roleCheck.role });
       await ctx.reply(
         usernameStepMessage("2/4", defaultUsername),
-        { parse_mode: "HTML", ...(defaultUsername ? confirmUsernameKeyboard() : {}) },
+        { parse_mode: "HTML", ...(defaultUsername ? confirmUsernameKeyboard() : cancelKeyboard()) },
       );
       return;
     }
@@ -391,7 +407,7 @@ export class FormService {
       this.repos.setState(telegramId, "reservation", "username", { ...data, roleName: roleCheck.role });
       await ctx.reply(
         usernameStepMessage("2/4", defaultUsername),
-        { parse_mode: "HTML", ...(defaultUsername ? confirmUsernameKeyboard() : {}) },
+        { parse_mode: "HTML", ...(defaultUsername ? confirmUsernameKeyboard() : cancelKeyboard()) },
       );
       return;
     }
@@ -422,6 +438,7 @@ export class FormService {
       });
       await ctx.reply(reservationDateStepMessage(), {
         parse_mode: "HTML",
+        ...cancelKeyboard(),
       });
       return;
     }
@@ -473,7 +490,7 @@ export class FormService {
       this.repos.setState(telegramId, "waitlist_reservation", "username", { ...data, roleName: roleCheck.role });
       await ctx.reply(
         usernameStepMessage("2/3", defaultUsername),
-        { parse_mode: "HTML", ...(defaultUsername ? confirmUsernameKeyboard() : {}) },
+        { parse_mode: "HTML", ...(defaultUsername ? confirmUsernameKeyboard() : cancelKeyboard()) },
       );
       return;
     }

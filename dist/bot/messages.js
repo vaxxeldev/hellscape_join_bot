@@ -197,16 +197,26 @@ export function reservationStatusChangedMessage(id, status) {
     return `Бронь <code>#${id}</code> теперь в статусе <code>${reservationStatusLabel(status)}</code>.`;
 }
 export function wipeDatabaseResultMessage(input) {
-    return `<b>База данных очищена</b>
-Пользователей удалено: <code>${input.users}</code>
-Анкет удалено: <code>${input.applications}</code>
-Броней удалено: <code>${input.roleReservations}</code>
-Invite-ссылок в БД удалено: <code>${input.inviteLinks}</code>
-Заявок на вступление удалено: <code>${input.joinRequests}</code>
-Состояний заполнения удалено: <code>${input.userStates}</code>
-Админ-действий удалено: <code>${input.adminActions}</code>
-Активных invite-ссылок отозвано в Telegram: <code>${input.revokedInviteLinks}</code>
-Не удалось отозвать ссылок: <code>${input.failedInviteRevokes}</code>`;
+    const failedRevokes = input.failedInviteRevokes
+        ? `${pe(premiumEmoji.cross, "❌")} <code>${input.failedInviteRevokes}</code>`
+        : `${pe(premiumEmoji.check, "✅")} <code>0</code>`;
+    return `${pe(premiumEmoji.trash, "🗑")} <b>База данных очищена</b>
+<blockquote>Все локальные записи бота удалены. Счетчики SQLite сброшены.</blockquote>
+
+╭ <b>Основные данные</b>
+├ Пользователи: <code>${input.users}</code>
+├ Анкеты: <code>${input.applications}</code>
+├ Брони ролей: <code>${input.roleReservations}</code>
+╰ Состояния заполнения: <code>${input.userStates}</code>
+
+╭ <b>Telegram-вступление</b>
+├ Invite-ссылки в БД: <code>${input.inviteLinks}</code>
+├ Заявки на вступление: <code>${input.joinRequests}</code>
+├ Активных ссылок отозвано: ${pe(premiumEmoji.check, "✅")} <code>${input.revokedInviteLinks}</code>
+╰ Не удалось отозвать: ${failedRevokes}
+
+╭ <b>Служебное</b>
+╰ Админ-действия: <code>${input.adminActions}</code>`;
 }
 export function adminOnlyCommandMessage() {
     return "Эта команда доступна только администрации.";
@@ -239,7 +249,12 @@ export function waitlistRoleStepMessage() {
     return "<b>Шаг 1/3</b>\nУкажите роль для брони в очереди закрытого набора.\n\nСписки ролей:";
 }
 export function fillingCancelledMessage() {
-    return "Заполнение отменено.";
+    return `${pe(premiumEmoji.cross, "❌")} <b>Заполнение отменено</b>
+<blockquote>Черновик удален. Можно начать заново через меню или команду.</blockquote>`;
+}
+export function noActiveFillingMessage() {
+    return `${pe(premiumEmoji.info, "ℹ")} <b>Нет активного заполнения</b>
+Сейчас нечего отменять.`;
 }
 export function profileUsernameMissingMessage() {
     return "В профиле нет username. Напишите контакт вручную.";

@@ -7,6 +7,7 @@ export const buttonText = {
     help: "Помощь",
     checkSubscription: "Проверить подписку",
     confirm: "Подтвердить",
+    cancel: "Отменить",
     approve: "Одобрить",
     reject: "Отказать",
     approveReservation: "Одобрить бронь",
