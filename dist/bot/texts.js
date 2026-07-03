@@ -52,6 +52,7 @@ export const joinRequestStatusText = {
 };
 export const inviteLinkStatusText = {
     active: "активна",
+    pending: "заявка отправлена",
     used: "использована",
     revoked: "отозвана",
     expired: "истекла",

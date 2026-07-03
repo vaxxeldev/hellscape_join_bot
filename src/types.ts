@@ -1,7 +1,7 @@
 import type { Context as TelegrafContext } from "telegraf";
 
 export type ApplicationStatus = "pending" | "approved" | "rejected" | "joined";
-export type InviteLinkStatus = "active" | "used" | "revoked" | "expired";
+export type InviteLinkStatus = "active" | "pending" | "used" | "revoked" | "expired";
 export type JoinRequestStatus = "pending" | "approved" | "rejected";
 export type ReservationStatus = "pending" | "approved" | "rejected" | "expired" | "used";
 export type ReservationKind = "scheduled" | "waitlist";
@@ -47,7 +47,8 @@ export interface ApplicationRecord {
 
 export interface InviteLinkRecord {
   id: number;
-  application_id: number;
+  application_id: number | null;
+  reservation_id: number | null;
   user_id: number;
   invite_link: string;
   status: InviteLinkStatus;
@@ -60,6 +61,7 @@ export interface InviteLinkRecord {
 export interface JoinRequestRecord {
   id: number;
   application_id: number | null;
+  reservation_id: number | null;
   user_id: number | null;
   invite_link_id: number | null;
   status: JoinRequestStatus;

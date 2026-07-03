@@ -1,10 +1,11 @@
 import { adminDisplay, isAdmin } from "../services/admin.js";
+import { issueJoinRequestInvite } from "../services/invites.js";
 import { safeAnswerCallback, safeEditMessageText, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
 import { logger } from "../utils/logger.js";
 import { escapeHtml, mentionUser, normalizeCodeWord, usernameOrDash } from "../utils/text.js";
-import { addHours, formatDate, toUnixSeconds } from "../utils/time.js";
+import { formatDate } from "../utils/time.js";
 import { adminApplicationKeyboard, adminReservationKeyboard, applicationRejectReasonsKeyboard, contactUserKeyboard, missingSubscriptionsKeyboard, reservationRejectReasonsKeyboard, } from "./keyboards.js";
-import { applicationCard, joinRequestCard, missingSubscriptionsMessage, profileText, reservationCard, subscriptionsConfirmedMessage, } from "./messages.js";
+import { applicationCard, joinRequestCard, missingSubscriptionsMessage, profileText, reservationCard, reservationJoinRequestCard, subscriptionsConfirmedMessage, } from "./messages.js";
 import { pe, premiumEmoji } from "./premiumEmoji.js";
 import { applicationStatusLabel } from "./statusLabels.js";
 import { applicationRejectReasons, callbackText, commonText, reservationRejectReasons } from "./texts.js";
@@ -169,17 +170,16 @@ export class CallbackHandlers {
             await safeSendMessage(this.bot, this.getConfig().adminChatId, `Анкета #${app.id} не одобрена: ${reasons.join(", ")}.`);
             return safeAnswerCallback(ctx, callbackText.approvalChecksFailed, true);
         }
-        const expiresAt = addHours(new Date(), this.getConfig().inviteExpireHours);
         let inviteLink;
         try {
-            // Telegram forbids combining creates_join_request with member_limit,
-            // so one-person behavior is enforced by invite_links in SQLite.
-            const invite = await this.bot.telegram.createChatInviteLink(this.getConfig().mainChatId, {
+            const issued = await issueJoinRequestInvite(this.bot, this.repos, this.getConfig(), {
+                applicationId: app.id,
+                userId: user.id,
                 name: `app-${app.id}-u-${user.telegram_id}`,
-                expire_date: toUnixSeconds(expiresAt),
-                creates_join_request: true,
             });
-            inviteLink = invite.invite_link;
+            if (!issued.created)
+                return safeAnswerCallback(ctx, commonText.alreadyReviewed, true);
+            inviteLink = issued.invite.invite_link;
         }
         catch (error) {
             logger.error({ error, applicationId }, "failed to create invite link");
@@ -187,12 +187,6 @@ export class CallbackHandlers {
             return safeAnswerCallback(ctx, callbackText.inviteCreationError, true);
         }
         this.repos.updateApplicationStatus(app.id, "approved", ctx.from.id);
-        this.repos.createInviteLink({
-            applicationId: app.id,
-            userId: user.id,
-            inviteLink,
-            expiresAt: expiresAt.toISOString(),
-        });
         this.repos.logAdminAction({
             adminId: ctx.from.id,
             action: "application_approved",
@@ -438,6 +432,20 @@ export class CallbackHandlers {
         const isWaitlist = reservation.reservation_kind === "waitlist";
         if (reservation.status !== "approved")
             return safeAnswerCallback(ctx, callbackText.reservationInactive, true);
+        if (user.is_banned) {
+            return safeAnswerCallback(ctx, "Вы заблокированы и не можете получить ссылку на вступление.", true);
+        }
+        if (await this.subscriptions.isMainChatMember(user.telegram_id)) {
+            return safeAnswerCallback(ctx, "Вы уже состоите в основном чате.", true);
+        }
+        const subscriptions = await this.subscriptions.check(user.telegram_id);
+        if (!subscriptions.life || !subscriptions.info) {
+            await ctx.reply(missingSubscriptionsMessage(subscriptions), {
+                parse_mode: "HTML",
+                ...missingSubscriptionsKeyboard(this.getConfig(), subscriptions),
+            });
+            return safeAnswerCallback(ctx, callbackText.approvalChecksFailed, true);
+        }
         if (isWaitlist) {
             const capacity = await this.forms.mainChatCapacity();
             if (capacity.isFull) {
@@ -449,26 +457,28 @@ export class CallbackHandlers {
                 return;
             }
         }
-        const expiresAt = addHours(new Date(), this.getConfig().inviteExpireHours);
         let inviteLink;
+        let created;
         try {
-            const invite = await this.bot.telegram.createChatInviteLink(this.getConfig().mainChatId, {
+            const issued = await issueJoinRequestInvite(this.bot, this.repos, this.getConfig(), {
+                reservationId: reservation.id,
+                userId: user.id,
                 name: `res-${reservation.id}-u-${user.telegram_id}`,
-                expire_date: toUnixSeconds(expiresAt),
-                member_limit: 1,
             });
-            inviteLink = invite.invite_link;
+            inviteLink = issued.invite.invite_link;
+            created = issued.created;
         }
         catch (error) {
             logger.error({ error, reservationId }, "failed to create reservation invite link");
             return safeAnswerCallback(ctx, callbackText.linkCreationFailed, true);
         }
-        this.repos.updateReservationStatus(reservation.id, "used", null);
-        await safeEditMessageText(ctx, `Бронь роли «${reservation.role_name}» подтверждена. Ссылка отправлена ниже.`, {
+        await safeEditMessageText(ctx, `Бронь роли «${reservation.role_name}» подтверждена. Персональная ссылка отправлена ниже.`, {
             reply_markup: { inline_keyboard: [] },
         });
-        await ctx.reply(`Вот личная ссылка для подачи заявки в основной чат по брони роли «${reservation.role_name}»:\n\n${inviteLink}\n\nСсылка временная и работает только для вас.`);
-        await safeSendMessage(this.bot, this.getConfig().adminChatId, `Пользователь ${user.telegram_id} подтвердил актуальность брони #${reservation.id}: ${reservation.role_name}. Ссылка отправлена.`);
+        await ctx.reply(`Вот личная ссылка для подачи заявки в основной чат по брони роли «${reservation.role_name}»:\n\n${inviteLink}\n\nСсылка временная, одноразовая и работает только для вас. После перехода администрация рассмотрит заявку на вступление.`);
+        if (created) {
+            await safeSendMessage(this.bot, this.getConfig().adminChatId, `Пользователь ${user.telegram_id} подтвердил актуальность брони #${reservation.id}: ${reservation.role_name}. Персональная ссылка на заявку отправлена.`);
+        }
         await safeAnswerCallback(ctx, callbackText.linkSent);
     }
     async cancelReservationAsOutdated(ctx, reservationId) {
@@ -564,13 +574,24 @@ export class CallbackHandlers {
 }
 export async function sendJoinRequestForAdmin(bot, repos, config, requestId, subscriptions) {
     const request = repos.getJoinRequestById(requestId);
-    if (!request?.user_id || !request.invite_link_id || !request.application_id)
+    if (!request?.user_id || !request.invite_link_id)
         return;
     const user = repos.getUserById(request.user_id);
     const invite = repos.getInviteLinkById(request.invite_link_id);
-    const app = repos.getApplicationById(request.application_id);
-    if (!user || !invite || !app)
+    if (!user || !invite)
         return;
     const check = await subscriptions.check(user.telegram_id);
-    await safeSendMessage(bot, config.adminChatId, joinRequestCard({ request, app, user, invite, subscriptions: check }), withoutLinkPreview({ parse_mode: "HTML" }));
+    if (request.application_id) {
+        const app = repos.getApplicationById(request.application_id);
+        if (!app)
+            return;
+        await safeSendMessage(bot, config.adminChatId, joinRequestCard({ request, app, user, invite, subscriptions: check }), withoutLinkPreview({ parse_mode: "HTML" }));
+        return;
+    }
+    if (!request.reservation_id)
+        return;
+    const reservation = repos.getReservationById(request.reservation_id);
+    if (!reservation)
+        return;
+    await safeSendMessage(bot, config.adminChatId, reservationJoinRequestCard({ request, reservation, user, invite, subscriptions: check }), withoutLinkPreview({ parse_mode: "HTML" }));
 }

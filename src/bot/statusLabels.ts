@@ -49,6 +49,8 @@ export function inviteLinkStatusLabel(status: InviteLinkStatus) {
   switch (status) {
     case "active":
       return inviteLinkStatusText.active;
+    case "pending":
+      return inviteLinkStatusText.pending;
     case "used":
       return inviteLinkStatusText.used;
     case "revoked":

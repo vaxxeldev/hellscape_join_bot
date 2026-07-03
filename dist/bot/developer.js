@@ -468,7 +468,7 @@ function developerStatsMessage(stats, roleCatalog, config) {
 ╰ Группы/супергруппы: <code>${stats.botChats.groups}</code>
 
 ╭ <b>Вступление</b>
-├ Invite-ссылки: <code>${stats.inviteLinks.total}</code> · активные: <code>${stats.inviteLinks.active}</code>
+├ Invite-ссылки: <code>${stats.inviteLinks.total}</code> · активные: <code>${stats.inviteLinks.active}</code> · заявка отправлена: <code>${stats.inviteLinks.pending}</code>
 ├ Join-заявки: <code>${stats.joinRequests.total}</code> · ожидают: <code>${stats.joinRequests.pending}</code>
 ╰ Состояния FSM: <code>${stats.service.userStates}</code>`;
 }

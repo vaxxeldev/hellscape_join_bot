@@ -100,7 +100,7 @@ export class Repositories {
         return this.db.query("SELECT * FROM applications ORDER BY created_at DESC LIMIT :limit", { limit });
     }
     wipeAllData() {
-        const activeInviteLinks = this.db.query("SELECT * FROM invite_links WHERE status = 'active'");
+        const activeInviteLinks = this.db.query("SELECT * FROM invite_links WHERE status IN ('active', 'pending')");
         return this.db.transaction(() => {
             const joinRequests = this.db.run("DELETE FROM join_requests").changes;
             const inviteLinks = this.db.run("DELETE FROM invite_links").changes;
@@ -157,9 +157,13 @@ export class Repositories {
     }
     createInviteLink(input) {
         const result = this.db.run(`
-      INSERT INTO invite_links (application_id, user_id, invite_link, status, expires_at)
-      VALUES (:applicationId, :userId, :inviteLink, 'active', :expiresAt)
-      `, input);
+      INSERT INTO invite_links (application_id, reservation_id, user_id, invite_link, status, expires_at)
+      VALUES (:applicationId, :reservationId, :userId, :inviteLink, 'active', :expiresAt)
+      `, {
+            ...input,
+            applicationId: input.applicationId ?? null,
+            reservationId: input.reservationId ?? null,
+        });
         return this.getInviteLinkById(Number(result.lastInsertRowid));
     }
     getInviteLinkById(id) {
@@ -169,6 +173,12 @@ export class Repositories {
         return this.db.get("SELECT * FROM invite_links WHERE invite_link = :inviteLink", {
             inviteLink,
         });
+    }
+    getActiveInviteLinkByApplicationId(applicationId) {
+        return this.db.get("SELECT * FROM invite_links WHERE application_id = :applicationId AND status IN ('active', 'pending') ORDER BY id DESC LIMIT 1", { applicationId });
+    }
+    getActiveInviteLinkByReservationId(reservationId) {
+        return this.db.get("SELECT * FROM invite_links WHERE reservation_id = :reservationId AND status IN ('active', 'pending') ORDER BY id DESC LIMIT 1", { reservationId });
     }
     setInviteLinkStatus(id, status) {
         const timestampColumn = status === "used" ? "used_at" : status === "revoked" || status === "expired" ? "revoked_at" : null;
@@ -180,19 +190,19 @@ export class Repositories {
     expireOldInviteLinks() {
         const expired = this.db.query(`
       SELECT * FROM invite_links
-      WHERE status = 'active' AND expires_at <= :now
+      WHERE status IN ('active', 'pending') AND expires_at <= :now
       `, { now: nowIso() });
         this.db.run(`
       UPDATE invite_links
       SET status = 'expired', revoked_at = :now
-      WHERE status = 'active' AND expires_at <= :now
+      WHERE status IN ('active', 'pending') AND expires_at <= :now
       `, { now: nowIso() });
         return expired;
     }
     createJoinRequest(input) {
         const result = this.db.run(`
-      INSERT INTO join_requests (application_id, user_id, invite_link_id, status)
-      VALUES (:applicationId, :userId, :inviteLinkId, :status)
+      INSERT INTO join_requests (application_id, reservation_id, user_id, invite_link_id, status)
+      VALUES (:applicationId, :reservationId, :userId, :inviteLinkId, :status)
       `, { ...input, status: input.status ?? "pending" });
         return this.getJoinRequestById(Number(result.lastInsertRowid));
     }
@@ -434,6 +444,7 @@ export class Repositories {
             inviteLinks: {
                 total: count("SELECT COUNT(*) AS count FROM invite_links"),
                 active: inviteStatuses.active ?? 0,
+                pending: inviteStatuses.pending ?? 0,
                 used: inviteStatuses.used ?? 0,
                 revoked: inviteStatuses.revoked ?? 0,
                 expired: inviteStatuses.expired ?? 0,

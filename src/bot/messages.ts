@@ -144,7 +144,35 @@ export function joinRequestCard(input: {
 ├ Личная ссылка: ${pe(premiumEmoji.check, "✅")}
 ├ Анкета: ${pe(premiumEmoji.check, "✅")}
 ├ Подписки: ${mark(input.subscriptions.life && input.subscriptions.info)}
-╰ Ссылка активна: ${mark(input.invite.status === "active")}`;
+╰ Ссылка действительна: ${mark(["active", "pending"].includes(input.invite.status))}`;
+}
+
+export function reservationJoinRequestCard(input: {
+  request: JoinRequestRecord;
+  reservation: RoleReservationRecord;
+  user: UserRecord;
+  invite: InviteLinkRecord;
+  subscriptions: SubscriptionCheck;
+}) {
+  const kind = input.reservation.reservation_kind === "waitlist" ? "очередь закрытого набора" : "бронь по дате";
+  return `${pe(premiumEmoji.userApproved, "👤")} <b>Заявка в основной чат #${input.request.id}</b>
+
+╭ <b>Пользователь</b>
+├ ${mentionUser(input.user)}
+├ ID: <code>${input.user.telegram_id}</code>
+╰ Username: ${escapeHtml(usernameOrDash(input.user.username))}
+
+╭ <b>Бронь</b>
+├ ID: <code>${input.reservation.id}</code>
+├ Тип: ${escapeHtml(kind)}
+├ Роль: <b>${escapeHtml(input.reservation.role_name)}</b>
+╰ Одобрена: ${escapeHtml(formatDate(input.reservation.reviewed_at))}
+
+╭ <b>Проверки</b>
+├ Личная ссылка: ${pe(premiumEmoji.check, "✅")}
+├ Бронь: ${pe(premiumEmoji.check, "✅")}
+├ Подписки: ${mark(input.subscriptions.life && input.subscriptions.info)}
+╰ Ссылка действительна: ${mark(["active", "pending"].includes(input.invite.status))}`;
 }
 
 export function profileText(user: UserRecord) {

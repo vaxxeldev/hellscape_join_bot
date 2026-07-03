@@ -12,6 +12,7 @@ import { mainMenuKeyboard } from "./bot/keyboards.js";
 import { createThrottle } from "./bot/throttle.js";
 import { logger } from "./utils/logger.js";
 import { SubscriptionService } from "./services/subscriptions.js";
+import { expireTrackedInviteLinks } from "./services/invites.js";
 import { RoleService } from "./services/roles.js";
 const config = loadConfig();
 const db = new Database(config.databaseUrl);
@@ -30,7 +31,7 @@ const forms = new FormService(bot, repos, subscriptions, roles, getConfig);
 const callbacks = new CallbackHandlers(bot, repos, subscriptions, forms, getConfig);
 const commands = new CommandHandlers(bot, repos, forms, subscriptions, getConfig);
 const developer = new DeveloperHandlers(bot, repos, roles, getConfig);
-const joinRequests = new JoinRequestHandlers(bot, repos, subscriptions, getConfig);
+const joinRequests = new JoinRequestHandlers(bot, repos, subscriptions, forms, getConfig);
 bot.catch((error, ctx) => {
     logger.error({ error, updateType: ctx.updateType }, "unhandled bot error");
 });
@@ -68,27 +69,26 @@ bot.on("text", async (ctx) => {
     await ctx.reply("Я принимаю только анкеты на вступление и заявки на бронь ролей.\nВыберите действие ниже.", mainMenuKeyboard(getConfig()));
 });
 async function expireInviteLinks() {
-    const expired = repos.expireOldInviteLinks();
-    for (const invite of expired) {
-        await safeRevokeExpiredInvite(invite.invite_link);
-    }
+    await expireTrackedInviteLinks(bot, repos, getConfig());
 }
-async function safeRevokeExpiredInvite(inviteLink) {
+let maintenanceRunning = false;
+async function runMaintenance() {
+    if (maintenanceRunning)
+        return;
+    maintenanceRunning = true;
     try {
-        await bot.telegram.revokeChatInviteLink(getConfig().mainChatId, inviteLink);
+        await expireInviteLinks();
+        await forms.expireReservations();
+        await forms.checkWaitlistQueue();
     }
-    catch (error) {
-        logger.warn({ error, inviteLink }, "failed to revoke expired invite link");
+    finally {
+        maintenanceRunning = false;
     }
 }
-void expireInviteLinks();
-void forms.expireReservations();
-void forms.checkWaitlistQueue();
+void runMaintenance();
 const reservationIntervalMs = getConfig().reservationExpireCheckHours * 60 * 60 * 1000;
 const timer = setInterval(() => {
-    void expireInviteLinks();
-    void forms.expireReservations();
-    void forms.checkWaitlistQueue();
+    void runMaintenance();
 }, reservationIntervalMs);
 await launchWithRetry();
 logger.info("Flood Games Join Bot started");

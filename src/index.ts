@@ -12,6 +12,7 @@ import { mainMenuKeyboard } from "./bot/keyboards.js";
 import { createThrottle } from "./bot/throttle.js";
 import { logger } from "./utils/logger.js";
 import { SubscriptionService } from "./services/subscriptions.js";
+import { expireTrackedInviteLinks } from "./services/invites.js";
 import { RoleService } from "./services/roles.js";
 import type { BotContext } from "./types.js";
 
@@ -33,7 +34,7 @@ const forms = new FormService(bot, repos, subscriptions, roles, getConfig);
 const callbacks = new CallbackHandlers(bot, repos, subscriptions, forms, getConfig);
 const commands = new CommandHandlers(bot, repos, forms, subscriptions, getConfig);
 const developer = new DeveloperHandlers(bot, repos, roles, getConfig);
-const joinRequests = new JoinRequestHandlers(bot, repos, subscriptions, getConfig);
+const joinRequests = new JoinRequestHandlers(bot, repos, subscriptions, forms, getConfig);
 
 bot.catch((error, ctx) => {
   logger.error({ error, updateType: ctx.updateType }, "unhandled bot error");
@@ -80,29 +81,27 @@ bot.on("text", async (ctx) => {
 });
 
 async function expireInviteLinks() {
-  const expired = repos.expireOldInviteLinks();
-  for (const invite of expired) {
-    await safeRevokeExpiredInvite(invite.invite_link);
-  }
+  await expireTrackedInviteLinks(bot, repos, getConfig());
 }
 
-async function safeRevokeExpiredInvite(inviteLink: string) {
+let maintenanceRunning = false;
+async function runMaintenance() {
+  if (maintenanceRunning) return;
+  maintenanceRunning = true;
   try {
-    await bot.telegram.revokeChatInviteLink(getConfig().mainChatId, inviteLink);
-  } catch (error) {
-    logger.warn({ error, inviteLink }, "failed to revoke expired invite link");
+    await expireInviteLinks();
+    await forms.expireReservations();
+    await forms.checkWaitlistQueue();
+  } finally {
+    maintenanceRunning = false;
   }
 }
 
-void expireInviteLinks();
-void forms.expireReservations();
-void forms.checkWaitlistQueue();
+void runMaintenance();
 
 const reservationIntervalMs = getConfig().reservationExpireCheckHours * 60 * 60 * 1000;
 const timer = setInterval(() => {
-  void expireInviteLinks();
-  void forms.expireReservations();
-  void forms.checkWaitlistQueue();
+  void runMaintenance();
 }, reservationIntervalMs);
 
 await launchWithRetry();
