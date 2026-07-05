@@ -181,9 +181,61 @@ export async function safeEditMessageText(ctx: BotContext, text: string, extra: 
       logger.debug({ error }, "telegram message was not modified");
       return null;
     }
+    // Admin cards are sent as animations (banner + caption), which have no `text`
+    // to edit. Fall back to editing the caption so decision updates still apply.
+    if (isNoTextToEditError(error)) {
+      try {
+        return await ctx.editMessageCaption(text, extra);
+      } catch (captionError) {
+        if (isMessageNotModifiedError(captionError)) return null;
+        logger.warn({ error: captionError }, "failed to edit telegram caption");
+        return null;
+      }
+    }
     logger.warn({ error }, "failed to edit telegram message");
     return null;
   }
+}
+
+// Edit a message by chat/message id (used when the callback context is not the
+// message being edited). Same caption fallback as safeEditMessageText.
+export async function safeEditMessageTextById(
+  bot: Telegraf<BotContext>,
+  chatId: number,
+  messageId: number,
+  text: string,
+  extra: Record<string, unknown> = {},
+) {
+  try {
+    return await bot.telegram.editMessageText(chatId, messageId, undefined, text, extra);
+  } catch (error) {
+    if (isMessageNotModifiedError(error)) return null;
+    if (isNoTextToEditError(error)) {
+      try {
+        return await bot.telegram.editMessageCaption(chatId, messageId, undefined, text, extra);
+      } catch (captionError) {
+        if (isMessageNotModifiedError(captionError)) return null;
+        logger.warn({ error: captionError, messageId }, "failed to edit telegram caption by id");
+        return null;
+      }
+    }
+    logger.warn({ error, messageId }, "failed to edit telegram message by id");
+    return null;
+  }
+}
+
+export function isNoTextToEditError(error: unknown) {
+  const description =
+    typeof error === "object" &&
+    error !== null &&
+    "response" in error &&
+    typeof error.response === "object" &&
+    error.response !== null &&
+    "description" in error.response
+      ? String(error.response.description)
+      : "";
+
+  return description.includes("there is no text in the message to edit");
 }
 
 export function isMessageNotModifiedError(error: unknown) {

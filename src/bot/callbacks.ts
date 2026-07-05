@@ -4,7 +4,7 @@ import type { Repositories } from "../db/repositories.js";
 import { adminDisplay, isAdmin } from "../services/admin.js";
 import { issueJoinRequestInvite } from "../services/invites.js";
 import type { SubscriptionService } from "../services/subscriptions.js";
-import { safeAnswerCallback, safeEditMessageText, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
+import { safeAnswerCallback, safeEditMessageText, safeEditMessageTextById, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
 import type { ApplicationRecord, BotContext, UserRecord } from "../types.js";
 import { logger } from "../utils/logger.js";
 import { escapeHtml, mentionUser, normalizeCodeWord, usernameOrDash } from "../utils/text.js";
@@ -674,12 +674,8 @@ export class CallbackHandlers {
     extra: Record<string, unknown>,
   ) {
     if (messageId) {
-      try {
-        await this.bot.telegram.editMessageText(this.getConfig().adminChatId, messageId, undefined, text, extra);
-        return;
-      } catch (error) {
-        logger.warn({ error, messageId }, "failed to edit stored admin message");
-      }
+      const edited = await safeEditMessageTextById(this.bot, this.getConfig().adminChatId, messageId, text, extra);
+      if (edited !== null) return;
     }
     await safeEditMessageText(ctx, text, extra);
   }

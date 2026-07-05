@@ -1,6 +1,6 @@
 import { adminDisplay, isAdmin } from "../services/admin.js";
 import { issueJoinRequestInvite } from "../services/invites.js";
-import { safeAnswerCallback, safeEditMessageText, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
+import { safeAnswerCallback, safeEditMessageText, safeEditMessageTextById, safeSendMessage, withoutLinkPreview } from "../services/telegram.js";
 import { logger } from "../utils/logger.js";
 import { escapeHtml, mentionUser, normalizeCodeWord, usernameOrDash } from "../utils/text.js";
 import { formatDate } from "../utils/time.js";
@@ -555,13 +555,9 @@ export class CallbackHandlers {
     }
     async editDecisionMessage(ctx, messageId, text, extra) {
         if (messageId) {
-            try {
-                await this.bot.telegram.editMessageText(this.getConfig().adminChatId, messageId, undefined, text, extra);
+            const edited = await safeEditMessageTextById(this.bot, this.getConfig().adminChatId, messageId, text, extra);
+            if (edited !== null)
                 return;
-            }
-            catch (error) {
-                logger.warn({ error, messageId }, "failed to edit stored admin message");
-            }
         }
         await safeEditMessageText(ctx, text, extra);
     }

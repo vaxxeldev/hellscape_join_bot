@@ -300,6 +300,117 @@ test("an expired reservation link closes the reservation and releases waitlist",
   }
 });
 
+function callHandle(handlers: JoinRequestHandlers, opts: { chatId: number; from: Record<string, unknown>; inviteLink: string }) {
+  return (handlers as never as { handle(ctx: BotContext): Promise<void> }).handle({
+    chatJoinRequest: {
+      chat: { id: opts.chatId },
+      from: opts.from,
+      invite_link: { invite_link: opts.inviteLink },
+    },
+  } as BotContext);
+}
+
+test("duplicate owner join request is ignored, not declined", async () => {
+  const fixture = createFixture();
+  try {
+    const { user, reservation } = createApprovedReservation(fixture.repos, 700, "scheduled");
+    const { bot, telegram } = createFakeBot();
+    const issued = await issueJoinRequestInvite(bot, fixture.repos, config, {
+      reservationId: reservation.id,
+      userId: user.id,
+      name: "dup",
+    });
+    const handlers = new JoinRequestHandlers(
+      bot,
+      fixture.repos,
+      { check: async () => ({ life: true, info: true }) } as never,
+      { checkWaitlistQueue: async () => {} } as never,
+      () => config,
+    );
+
+    const from = { id: user.telegram_id, first_name: "User", username: "user700" };
+    await callHandle(handlers, { chatId: config.mainChatId, from, inviteLink: issued.invite.invite_link });
+    // Telegram redelivers the same update (at-least-once).
+    await callHandle(handlers, { chatId: config.mainChatId, from, inviteLink: issued.invite.invite_link });
+
+    assert.equal(telegram.declined.length, 0);
+    assert.equal(telegram.revoked.length, 0);
+    assert.equal(fixture.repos.getInviteLinkById(issued.invite.id)?.status, "pending");
+    // Exactly one pending join request was created; the duplicate added nothing.
+    assert.ok(fixture.repos.getJoinRequestById(1));
+    assert.equal(fixture.repos.getJoinRequestById(2), undefined);
+    assert.equal(fixture.repos.getReservationById(reservation.id)?.status, "approved");
+  } finally {
+    fixture.close();
+  }
+});
+
+test("owner request after join is used is ignored", async () => {
+  const fixture = createFixture();
+  try {
+    const { user, reservation } = createApprovedReservation(fixture.repos, 750, "scheduled");
+    const { bot, telegram } = createFakeBot();
+    const issued = await issueJoinRequestInvite(bot, fixture.repos, config, {
+      reservationId: reservation.id,
+      userId: user.id,
+      name: "used",
+    });
+    fixture.repos.setInviteLinkStatus(issued.invite.id, "used");
+    const handlers = new JoinRequestHandlers(
+      bot,
+      fixture.repos,
+      { check: async () => ({ life: true, info: true }) } as never,
+      { checkWaitlistQueue: async () => {} } as never,
+      () => config,
+    );
+
+    await callHandle(handlers, {
+      chatId: config.mainChatId,
+      from: { id: user.telegram_id, first_name: "User", username: "user750" },
+      inviteLink: issued.invite.invite_link,
+    });
+
+    assert.equal(telegram.declined.length, 0);
+    assert.equal(fixture.repos.getInviteLinkById(issued.invite.id)?.status, "used");
+    assert.equal(fixture.repos.getJoinRequestById(1), undefined);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("owner request on a revoked link is declined and the owner is told to reapply", async () => {
+  const fixture = createFixture();
+  try {
+    const { user, reservation } = createApprovedReservation(fixture.repos, 800, "scheduled");
+    const { bot, telegram } = createFakeBot();
+    const issued = await issueJoinRequestInvite(bot, fixture.repos, config, {
+      reservationId: reservation.id,
+      userId: user.id,
+      name: "revoked",
+    });
+    fixture.repos.setInviteLinkStatus(issued.invite.id, "revoked");
+    const handlers = new JoinRequestHandlers(
+      bot,
+      fixture.repos,
+      { check: async () => ({ life: true, info: true }) } as never,
+      { checkWaitlistQueue: async () => {} } as never,
+      () => config,
+    );
+
+    await callHandle(handlers, {
+      chatId: config.mainChatId,
+      from: { id: user.telegram_id, first_name: "User", username: "user800" },
+      inviteLink: issued.invite.invite_link,
+    });
+
+    assert.deepEqual(telegram.declined, [user.telegram_id]);
+    assert.ok(telegram.sent.some((message) => message.chatId === user.telegram_id));
+    assert.equal(telegram.revoked.length, 0);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("ban and lost subscriptions invalidate reservation links", async () => {
   const fixture = createFixture();
   try {

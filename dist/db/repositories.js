@@ -180,6 +180,14 @@ export class Repositories {
     getActiveInviteLinkByReservationId(reservationId) {
         return this.db.get("SELECT * FROM invite_links WHERE reservation_id = :reservationId AND status IN ('active', 'pending') ORDER BY id DESC LIMIT 1", { reservationId });
     }
+    // Atomically consume an active personal link: active -> pending. Returns true
+    // only for the caller that won the transition. A duplicate chat_join_request
+    // (Telegram delivers at-least-once) or a stale update loses the race and gets
+    // false, so it can be ignored instead of declining the owner's live request.
+    consumeActiveInviteLink(id) {
+        const result = this.db.run("UPDATE invite_links SET status = 'pending' WHERE id = :id AND status = 'active'", { id });
+        return result.changes === 1;
+    }
     setInviteLinkStatus(id, status) {
         const timestampColumn = status === "used" ? "used_at" : status === "revoked" || status === "expired" ? "revoked_at" : null;
         const sql = timestampColumn
