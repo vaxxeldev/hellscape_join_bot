@@ -459,3 +459,97 @@ test("ban and lost subscriptions invalidate reservation links", async () => {
     fixture.close();
   }
 });
+
+test("join request via a link the bot never created is ignored entirely", async () => {
+  const fixture = createFixture();
+  try {
+    const { bot, telegram } = createFakeBot();
+    const handlers = new JoinRequestHandlers(
+      bot,
+      fixture.repos,
+      { check: async () => ({ life: true, info: true }) } as never,
+      { checkWaitlistQueue: async () => {} } as never,
+      () => config,
+    );
+
+    await callHandle(handlers, {
+      chatId: config.mainChatId,
+      from: { id: 900, first_name: "Owner", username: "owner_invited" },
+      inviteLink: "https://t.me/+manually-created-by-owner",
+    });
+
+    assert.equal(telegram.declined.length, 0);
+    assert.equal(telegram.revoked.length, 0);
+    assert.equal(telegram.sent.length, 0);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("owner join request on a leaked link bans the link owner from applications", async () => {
+  const fixture = createFixture();
+  try {
+    const { user, reservation } = createApprovedReservation(fixture.repos, 900, "scheduled");
+    const { bot, telegram } = createFakeBot();
+    const issued = await issueJoinRequestInvite(bot, fixture.repos, config, {
+      reservationId: reservation.id,
+      userId: user.id,
+      name: "leaked",
+    });
+    const handlers = new JoinRequestHandlers(
+      bot,
+      fixture.repos,
+      { check: async () => ({ life: true, info: true }) } as never,
+      { checkWaitlistQueue: async () => {} } as never,
+      () => config,
+    );
+
+    await callHandle(handlers, {
+      chatId: config.mainChatId,
+      from: { id: 901, first_name: "Intruder", username: "intruder901" },
+      inviteLink: issued.invite.invite_link,
+    });
+
+    assert.deepEqual(telegram.declined, [901]);
+    assert.equal(fixture.repos.getUserById(user.id)?.is_banned, 1);
+    assert.ok(telegram.sent.some((message) => message.text.includes("Слив персональной ссылки")));
+  } finally {
+    fixture.close();
+  }
+});
+
+test("someone else actually joining via a leaked link bans the link owner from applications", async () => {
+  const fixture = createFixture();
+  try {
+    const { user, reservation } = createApprovedReservation(fixture.repos, 950, "scheduled");
+    const { bot, telegram } = createFakeBot();
+    const issued = await issueJoinRequestInvite(bot, fixture.repos, config, {
+      reservationId: reservation.id,
+      userId: user.id,
+      name: "leaked-join",
+    });
+    const handlers = new JoinRequestHandlers(
+      bot,
+      fixture.repos,
+      { check: async () => ({ life: true, info: true }) } as never,
+      { checkWaitlistQueue: async () => {} } as never,
+      () => config,
+    );
+
+    await (handlers as never as { handleChatMember(ctx: BotContext): Promise<void> }).handleChatMember({
+      chatMember: {
+        chat: { id: config.mainChatId },
+        old_chat_member: { status: "left", user: { id: 951 } },
+        new_chat_member: { status: "member", user: { id: 951 } },
+        invite_link: { invite_link: issued.invite.invite_link },
+      },
+    } as BotContext);
+
+    assert.equal(fixture.repos.getInviteLinkById(issued.invite.id)?.status, "revoked");
+    assert.equal(fixture.repos.getUserById(user.id)?.is_banned, 1);
+    assert.ok(telegram.sent.some((message) => message.text.includes("Нарушена персональность ссылки")));
+    assert.ok(telegram.sent.some((message) => message.text.includes("Слив персональной ссылки")));
+  } finally {
+    fixture.close();
+  }
+});

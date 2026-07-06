@@ -37,7 +37,9 @@ export class JoinRequestHandlers {
         }
         const invite = this.repos.getInviteLinkByUrl(inviteUrl);
         if (!invite) {
-            await this.handleUnknownRequest(from.id, from.username, "ссылка не зарегистрирована ботом");
+            // Ссылка создана не ботом (владельцем/админом вручную в Telegram) —
+            // бот на такие ссылки не реагирует: ни отклонения, ни сообщений в админ-чат.
+            logger.debug({ userId: from.id, username: from.username }, "join request via link not tracked by bot, ignoring");
             return;
         }
         const user = this.repos.upsertUser({
@@ -50,6 +52,7 @@ export class JoinRequestHandlers {
         // Это единственный случай, когда чужой заход инвалидирует персональную ссылку.
         if (invite.user_id !== user.id) {
             await this.rejectJoinRequest(invite, user.id, from, ["пользователь не является владельцем ссылки"]);
+            await this.banLeakedLinkOwner(invite.user_id);
             return;
         }
         // Идемпотентность: атомарно занимаем ссылку active -> pending. Только первый
@@ -153,6 +156,22 @@ export class JoinRequestHandlers {
         if (reservation.reservation_kind === "waitlist")
             await this.forms.checkWaitlistQueue();
     }
+    // Владелец слил свою персональную ссылку постороннему — ограничиваем его
+    // от новых анкет и броней, как при авто-бане по лимиту входов (joinLimit.ts).
+    async banLeakedLinkOwner(ownerUserId) {
+        const owner = this.repos.getUserById(ownerUserId);
+        if (!owner || owner.is_banned)
+            return;
+        this.repos.setUserBanned(owner.telegram_id, true, "link_leak");
+        this.repos.logAdminAction({
+            adminId: 0,
+            action: "user_autobanned_link_leak",
+            targetUserId: owner.telegram_id,
+            details: "personal invite link used by another user",
+        });
+        logger.info({ telegramId: owner.telegram_id }, "user auto-banned after leaking personal invite link");
+        await safeSendMessage(this.bot, this.getConfig().adminChatId, `${pe(premiumEmoji.cross, "❌")} <b>Слив персональной ссылки</b>\nПользователь <code>${owner.telegram_id}</code> передал свою личную ссылку другому человеку и больше не может подавать анкеты и брони.\nСнять ограничение: <code>/unban ${owner.telegram_id}</code>`, { parse_mode: "HTML" });
+    }
     async declineTelegramJoinRequest(userId) {
         try {
             await this.bot.telegram.declineChatJoinRequest(this.getConfig().mainChatId, userId);
@@ -183,6 +202,7 @@ export class JoinRequestHandlers {
             await safeRevokeInviteLink(this.bot, this.getConfig().mainChatId, invite.invite_link);
             await safeSendMessage(this.bot, this.getConfig().adminChatId, `${pe(premiumEmoji.cross, "❌")} <b>Нарушена персональность ссылки</b>\nСсылка пользователя <code>${joinedUser?.telegram_id ?? "unknown"}</code> была использована участником <code>${joinedTelegramId}</code>. Проверьте участника вручную.`, { parse_mode: "HTML" });
             await this.releaseInvalidReservation(invite.reservation_id ?? undefined);
+            await this.banLeakedLinkOwner(invite.user_id);
             return;
         }
         const app = invite.application_id ? this.repos.getApplicationById(invite.application_id) : undefined;
