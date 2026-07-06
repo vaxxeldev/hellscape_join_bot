@@ -7,7 +7,7 @@ import { logger } from "../utils/logger.js";
 type RoleUniverse = "genshin" | "hsr";
 type RoleStatus = "free" | "occupied" | "reserved" | "unknown";
 
-type RoleEntry = {
+export type RoleEntry = {
   canonical: string;
   aliases: string[];
   universe: RoleUniverse;
@@ -122,7 +122,12 @@ export class RoleService {
     const match = matches.find((item) => roleKeys.has(item.key));
     if (!match) return "unknown";
 
-    const segment = text.slice(match.end, matches.find((item) => item.index > match.index)?.index ?? text.length);
+    // Границу сегмента ищем по ближайшему тире в тексте, а не по следующей
+    // РАСПОЗНАННОЙ роли: если имя между текущей ролью и следующей не совпало
+    // ни с одним алиасом (опечатка, сокращение в посте), её маркер занятости
+    // не должен утекать в статус текущей роли.
+    const nextDashIndex = nextDashIndexAfter(text, match.end);
+    const segment = text.slice(match.end, nextDashIndex ?? text.length);
     if (segment.includes(occupiedRoleMarker)) return "occupied";
     if (/@[a-zA-Z0-9_]{3,}/.test(segment)) return "reserved";
     return "free";
@@ -170,7 +175,7 @@ export class RoleService {
   }
 }
 
-function allRoleMatches(text: string, roles: RoleEntry[]) {
+export function allRoleMatches(text: string, roles: RoleEntry[]) {
   return roles
     .flatMap((role) =>
       role.aliases.flatMap((alias) => {
@@ -185,25 +190,35 @@ function allRoleMatches(text: string, roles: RoleEntry[]) {
     .sort((a, b) => a.index - b.index || b.end - a.end);
 }
 
-function underlinedRoleNames(html: string) {
+export function underlinedRoleNames(html: string) {
+  const body = messageBodyHtml(html) ?? html;
   return new Set(
-    [...html.matchAll(/<u>(.*?)<\/u>/gis)]
+    [...body.matchAll(/<u>(.*?)<\/u>/gis)]
       .map((match) => stripTags(decodeHtml(match[1] ?? "")))
       .map(normalizeRole)
       .filter(Boolean),
   );
 }
 
-function postPlainText(html: string) {
-  const message = /<div class="tgme_widget_message_text js-message_text"[^>]*>([\s\S]*?)<\/div><\/div><div class="media_not_supported_cont">/i.exec(
+function messageBodyHtml(html: string) {
+  return /<div class="tgme_widget_message_text js-message_text"[^>]*>([\s\S]*?)<\/div><\/div><div class="media_not_supported_cont">/i.exec(
     html,
   )?.[1];
+}
+
+export function postPlainText(html: string) {
+  const message = messageBodyHtml(html);
   return stripTags(
     decodeHtml((message ?? html).replace(/<br\s*\/?>/gi, " ").replace(/<tg-emoji[\s\S]*?<\/tg-emoji>/gi, (value) => {
       const emoji = /<b>(.*?)<\/b>/i.exec(value)?.[1];
       return emoji ? decodeHtml(emoji) : ` ${occupiedRoleMarker} `;
     })),
   ).replace(/\s+/g, " ");
+}
+
+export function nextDashIndexAfter(text: string, fromIndex: number) {
+  const relativeIndex = text.slice(fromIndex).search(/[-–—]/);
+  return relativeIndex === -1 ? null : fromIndex + relativeIndex;
 }
 
 function stripTags(value: string) {
@@ -221,7 +236,7 @@ function decodeHtml(value: string) {
     .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
 }
 
-function normalizeRole(value: string) {
+export function normalizeRole(value: string) {
   return value
     .toLowerCase()
     .replace(/ё/g, "е")
